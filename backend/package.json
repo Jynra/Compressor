@@ -1,0 +1,149 @@
+{
+  "name": "file-optimizer-backend",
+  "version": "2.0.0",
+  "description": "Backend pour l'optimiseur de fichiers multimédia",
+  "main": "src/server.js",
+  "keywords": [
+    "file-optimization",
+    "image-compression",
+    "video-compression",
+    "multimedia",
+    "ffmpeg",
+    "sharp"
+  ],
+  "author": "File Optimizer Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "worker": "node src/workers/processor.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.js",
+    "lint:fix": "eslint src/**/*.js --fix",
+    "format": "prettier --write src/**/*.js",
+    "build": "echo 'No build step required for Node.js'",
+    "clean": "rm -rf node_modules package-lock.json",
+    "setup": "npm install && cp .env.example .env",
+    "docker:build": "docker build -t file-optimizer-backend .",
+    "docker:run": "docker run -p 8000:8000 file-optimizer-backend",
+    "health": "node scripts/health-check.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "compression": "^1.7.4",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "socket.io": "^4.7.4",
+    "redis": "^4.6.12",
+    "bull": "^4.12.2",
+    "sharp": "^0.33.1",
+    "fluent-ffmpeg": "^2.1.2",
+    "pdf-lib": "^1.17.1",
+    "winston": "^3.11.0",
+    "joi": "^17.11.0",
+    "uuid": "^9.0.1",
+    "express-rate-limit": "^7.1.5",
+    "express-validator": "^7.0.1",
+    "dotenv": "^16.3.1",
+    "mime-types": "^2.1.35",
+    "file-type": "^18.7.0",
+    "crypto": "^1.0.1",
+    "fs-extra": "^11.2.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-node": "^11.1.0",
+    "prettier": "^3.1.1",
+    "@types/jest": "^29.5.8",
+    "redis-mock": "^0.56.3"
+  },
+  "optionalDependencies": {
+    "aws-sdk": "^2.1509.0",
+    "@google-cloud/storage": "^7.7.0",
+    "@sentry/node": "^7.85.0",
+    "prom-client": "^15.1.0",
+    "nodemailer": "^6.9.7"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "collectCoverageFrom": [
+      "src/**/*.js",
+      "!src/server.js",
+      "!src/workers/**/*.js"
+    ],
+    "coverageDirectory": "coverage",
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "testMatch": [
+      "**/tests/**/*.test.js",
+      "**/src/**/__tests__/**/*.js"
+    ]
+  },
+  "eslintConfig": {
+    "env": {
+      "node": true,
+      "es2021": true,
+      "jest": true
+    },
+    "extends": [
+      "eslint:recommended",
+      "plugin:node/recommended",
+      "prettier"
+    ],
+    "parserOptions": {
+      "ecmaVersion": 12,
+      "sourceType": "module"
+    },
+    "rules": {
+      "no-console": "warn",
+      "no-unused-vars": "error",
+      "prefer-const": "error",
+      "no-var": "error"
+    }
+  },
+  "prettier": {
+    "singleQuote": true,
+    "trailingComma": "es5",
+    "tabWidth": 4,
+    "semi": true,
+    "printWidth": 100
+  },
+  "nodemonConfig": {
+    "watch": [
+      "src"
+    ],
+    "ext": "js,json",
+    "ignore": [
+      "src/**/*.test.js",
+      "node_modules"
+    ],
+    "env": {
+      "NODE_ENV": "development"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/file-optimizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/file-optimizer/issues"
+  },
+  "homepage": "https://github.com/your-username/file-optimizer#readme"
+}
