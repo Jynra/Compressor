@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Optimizer - Compresseur de Fichiers</title>
+    
+    <!-- Styles CSS -->
+    <link rel="stylesheet" href="css/styles.css">
+    
+    <!-- Socket.IO CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.js"></script>
+    
+    <!-- Favicon et métadonnées -->
+    <link rel="icon" href="assets/favicon.ico" type="image/x-icon">
+    <meta name="description" content="Compressez et optimisez vos fichiers multimédia sans changer leur format">
+    <meta name="keywords" content="compression fichiers, optimisation images, compresseur vidéo">
+    <meta name="author" content="File Optimizer Team">
+    
+    <!-- Open Graph pour partage social -->
+    <meta property="og:title" content="File Optimizer - Compresseur de Fichiers">
+    <meta property="og:description" content="Compressez et optimisez vos fichiers multimédia sans changer leur format">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="assets/og-image.png">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>
+                <img src="assets/logo.svg" alt="File Optimizer" class="logo" />
+                File Optimizer
+            </h1>
+            <p>Compressez et optimisez vos fichiers multimédia sans changer leur format</p>
+        </header>
+
+        <!-- Upload Section -->
+        <section class="upload-section">
+            <div class="upload-zone" id="uploadZone">
+                <div class="upload-icon">
+                    <img src="assets/icons/upload.svg" alt="Upload" />
+                </div>
+                <div class="upload-text">Glissez vos fichiers ici ou cliquez pour sélectionner</div>
+                <div class="upload-subtext">
+                    Images, vidéos, audio et documents • Maximum 5GB
+                </div>
+                <input type="file" id="fileInput" class="file-input" multiple 
+                       accept="image/*,video/*,audio/*,.pdf">
+            </div>
+        </section>
+
+        <!-- Settings Panel -->
+        <section class="settings-panel" id="settingsPanel">
+            <h2 class="settings-title">
+                <img src="assets/icons/settings.svg" alt="Settings" class="section-icon" />
+                Paramètres de compression
+            </h2>
+            <div class="settings-grid" id="settingsGrid">
+                <!-- Les paramètres seront générés dynamiquement selon le type de fichier -->
+            </div>
+        </section>
+
+        <!-- Jobs Section -->
+        <section class="jobs-section">
+            <h2 class="jobs-title">
+                <img src="assets/icons/list.svg" alt="Jobs" class="section-icon" />
+                Fichiers en traitement
+            </h2>
+            <div class="jobs-controls">
+                <button class="btn btn-secondary" id="refreshJobs">
+                    <img src="assets/icons/refresh.svg" alt="Refresh" />
+                    Actualiser
+                </button>
+                <button class="btn btn-secondary" id="clearCompleted">
+                    <img src="assets/icons/clean.svg" alt="Clean" />
+                    Nettoyer terminés
+                </button>
+            </div>
+            <div id="jobsList">
+                <div class="empty-state">
+                    <div class="empty-state-icon">
+                        <img src="assets/icons/empty-folder.svg" alt="Empty" />
+                    </div>
+                    <div>Aucun fichier en cours de traitement</div>
+                    <div style="font-size: 0.9rem; margin-top: 0.5rem;">
+                        Uploadez un fichier pour commencer
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Status Indicator -->
+    <div class="status-indicator" id="statusIndicator">
+        <div class="status-icon" id="statusIcon"></div>
+        <div id="statusMessage"></div>
+        <button class="status-close" id="statusClose">&times;</button>
+    </div>
+
+    <!-- Connection Status -->
+    <div class="connection-status disconnected" id="connectionStatus">
+        <div class="connection-dot"></div>
+        <span>Déconnecté</span>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <div class="loading-text">Chargement...</div>
+        </div>
+    </div>
+
+    <!-- JavaScript Files -->
+    <script src="js/utils.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/websocket.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
