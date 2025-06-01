@@ -1,0 +1,281 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # Application principale
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: file-optimizer-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379
+      - TEMP_DIR=/app/uploads
+      - LOG_LEVEL=info
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
+      - UPLOAD_MAX_SIZE=${UPLOAD_MAX_SIZE:-5368709120}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+    volumes:
+      - uploads:/app/uploads
+      - logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - file-optimizer
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Worker de traitement
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: file-optimizer-worker
+    restart: unless-stopped
+    command: npm run worker
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - TEMP_DIR=/app/uploads
+      - LOG_LEVEL=info
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+      - JOB_TIMEOUT=${JOB_TIMEOUT:-1800}
+    volumes:
+      - uploads:/app/uploads
+      - logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - file-optimizer
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # Redis pour la queue et le cache
+  redis:
+    image: redis:7-alpine
+    container_name: file-optimizer-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server 
+      --appendonly yes 
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1 300 10 60 10000
+    volumes:
+      - redis_data:/data
+    networks:
+      - file-optimizer
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # Monitoring avec Prometheus (optionnel)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: file-optimizer-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - file-optimizer
+    profiles:
+      - monitoring
+
+  # Grafana pour la visualisation (optionnel)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: file-optimizer-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - file-optimizer
+    profiles:
+      - monitoring
+
+  # Nginx reverse proxy (optionnel)
+  nginx:
+    image: nginx:alpine
+    container_name: file-optimizer-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/ssl/certs:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    depends_on:
+      - app
+    networks:
+      - file-optimizer
+    profiles:
+      - production
+
+volumes:
+  uploads:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${UPLOADS_PATH:-./uploads}
+      o: bind
+  
+  logs:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${LOGS_PATH:-./logs}
+      o: bind
+  
+  redis_data:
+    driver: local
+  
+  prometheus_data:
+    driver: local
+  
+  grafana_data:
+    driver: local
+
+networks:
+  file-optimizer:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Configuration pour le développement
+---
+# docker-compose.dev.yml
+version: '3.8'
+
+services:
+  # Application en mode développement
+  app-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: file-optimizer-dev
+    ports:
+      - "8000:8000"
+      - "9229:9229" # Debug port
+    environment:
+      - NODE_ENV=development
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379
+      - TEMP_DIR=/app/uploads
+      - LOG_LEVEL=debug
+      - CORS_ORIGIN=http://localhost:3000,http://localhost:8080
+      - SKIP_RATE_LIMIT=true
+    volumes:
+      - .:/app
+      - uploads_dev:/app/uploads
+      - node_modules:/app/node_modules
+    depends_on:
+      - redis
+    networks:
+      - file-optimizer-dev
+    command: npm run dev
+
+  # Worker en mode développement
+  worker-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: file-optimizer-worker-dev
+    environment:
+      - NODE_ENV=development
+      - REDIS_URL=redis://redis:6379
+      - TEMP_DIR=/app/uploads
+      - LOG_LEVEL=debug
+      - WORKER_CONCURRENCY=1
+    volumes:
+      - .:/app
+      - uploads_dev:/app/uploads
+      - node_modules:/app/node_modules
+    depends_on:
+      - redis
+    networks:
+      - file-optimizer-dev
+    command: npm run worker
+
+  # Redis pour le développement
+  redis:
+    image: redis:7-alpine
+    container_name: file-optimizer-redis-dev
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - file-optimizer-dev
+
+  # Frontend en mode développement
+  frontend-dev:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: file-optimizer-frontend-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+    networks:
+      - file-optimizer-dev
+    command: npm start
+
+volumes:
+  uploads_dev:
+  redis_data_dev:
+  node_modules:
+  frontend_node_modules:
+
+networks:
+  file-optimizer-dev:
+    driver: bridge
