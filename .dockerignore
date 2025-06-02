@@ -1,0 +1,69 @@
+# .dockerignore - Optimisé pour Compressor
+
+# ===========================================
+# FICHIERS DE DÉVELOPPEMENT
+# ===========================================
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.git
+.gitignore
+.github
+
+# ===========================================
+# CONFIGURATION ET MÉTADONNÉES
+# ===========================================
+README.md
+readme_progress.md
+docker-compose*.yml
+Dockerfile*
+.env
+.env.local
+.env.*.local
+.env.example
+
+# ===========================================
+# RÉPERTOIRES TEMPORAIRES
+# ===========================================
+coverage/
+.nyc_output
+.cache
+uploads/
+logs/
+tmp/
+*.log
+
+# ===========================================
+# FICHIERS SYSTÈME
+# ===========================================
+.DS_Store
+Thumbs.db
+
+# ===========================================
+# TESTS ET DOCUMENTATION
+# ===========================================
+tests/
+docs/
+monitoring/
+
+# ===========================================
+# SAUVEGARDES ET ARCHIVES
+# ===========================================
+backup-*.tar.gz
+*.backup
+*.bak
+
+# ===========================================
+# IDE ET ÉDITEURS
+# ===========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===========================================
+# NGINX CONFIGURATION (sera montée en volume)
+# ===========================================
+nginx/
