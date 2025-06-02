@@ -76,7 +76,8 @@ cd compressor
 cp .env.example .env
 nano .env  # Modifier JWT_SECRET et CORS_ORIGIN
 
-# 3. Lancer Compressor
+# 3. Créer les dossiers requis et lancer Compressor
+mkdir logs uploads
 docker-compose up -d
 ```
 
@@ -84,8 +85,8 @@ docker-compose up -d
 
 ### Accès à l'application
 - **Interface Web** : http://localhost:3001
-- **API** : http://localhost:8080
-- **Health Check** : http://localhost:8080/api/health
+- **API** : http://localhost:8081
+- **Health Check** : http://localhost:8081/api/health
 
 ## 🔧 Configuration
 
@@ -146,7 +147,7 @@ UPLOAD_MAX_SIZE=5368709120  # 5GB
 | Service | Port | Rôle |
 |---------|------|------|
 | **compressor-frontend** | 3001 | Interface utilisateur |
-| **compressor-app** | 8080 | API REST + WebSocket |
+| **compressor-app** | 8081 | API REST + WebSocket |
 | **compressor-worker** | - | Traitement fichiers |
 | **compressor-redis** | - | Queue + Cache |
 
@@ -162,24 +163,24 @@ UPLOAD_MAX_SIZE=5368709120  # 5GB
 
 #### Upload d'un fichier
 ```bash
-curl -X POST http://localhost:8080/api/upload \
+curl -X POST http://localhost:8081/api/upload \
   -F "file=@image.jpg" \
   -F 'settings={"quality":85,"maxWidth":1920}'
 ```
 
 #### Récupérer le statut
 ```bash
-curl http://localhost:8080/api/status/job-id
+curl http://localhost:8081/api/status/job-id
 ```
 
 #### Télécharger le résultat
 ```bash
-curl http://localhost:8080/api/download/job-id -o optimized-image.jpg
+curl http://localhost:8081/api/download/job-id -o optimized-image.jpg
 ```
 
 ### WebSocket (Temps réel)
 ```javascript
-const socket = io('http://localhost:8080');
+const socket = io('http://localhost:8081');
 
 socket.on('job-progress', (data) => {
     console.log(`Job ${data.jobId}: ${data.progress}%`);
@@ -205,7 +206,7 @@ docker-compose logs -f
 docker stats compressor-app compressor-worker
 
 # Health check
-curl http://localhost:8080/api/health
+curl http://localhost:8081/api/health
 ```
 
 ### Métriques disponibles
@@ -298,6 +299,67 @@ ls -la uploads/
 docker-compose logs compressor-app | grep upload
 ```
 
+#### Port déjà utilisé
+```bash
+# Trouver quel processus utilise le port
+sudo lsof -i :8081
+
+# Modifier le port dans docker-compose.yml si nécessaire
+# Changer "8081:8000" vers "8082:8000" par exemple
+```
+
+### Fichiers manquants
+
+Si vous rencontrez des erreurs de montage de volumes :
+
+```bash
+# Créer les dossiers requis
+mkdir -p logs uploads nginx
+
+# Vérifier la structure
+ls -la
+# Doit afficher : logs/ uploads/ nginx/ backend/ frontend/
+```
+
+## 🚀 Déploiement Production
+
+### Configuration serveur
+
+```bash
+# Configurer les variables de production
+cp .env.example .env
+nano .env
+
+# Variables critiques à modifier :
+JWT_SECRET=your-super-secure-generated-key-here
+CORS_ORIGIN=https://compressor.yourdomain.com
+UPLOADS_PATH=/data/compressor/uploads
+LOGS_PATH=/var/log/compressor
+WORKER_CONCURRENCY=4
+```
+
+### Avec reverse proxy (recommandé)
+
+```nginx
+# Configuration Nginx reverse proxy
+server {
+    listen 80;
+    server_name compressor.yourdomain.com;
+    
+    # Frontend
+    location / {
+        proxy_pass http://localhost:3001;
+    }
+    
+    # API
+    location /api/ {
+        proxy_pass http://localhost:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
 ## 🤝 Contribution
 
 1. **Fork** le projet
@@ -370,7 +432,36 @@ git clone https://github.com/your-username/compressor.git
 cd compressor
 cp .env.example .env
 nano .env  # Changer JWT_SECRET
+mkdir logs uploads
 docker-compose up -d
 ```
 
 **Votre Compressor est prêt sur http://localhost:3001 ! 🎉**
+
+---
+
+## 📋 Points d'Accès Rapides
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| 🎨 **Interface** | http://localhost:3001 | Application web principale |
+| 🔧 **API** | http://localhost:8081 | Backend REST |
+| 🏥 **Santé** | http://localhost:8081/api/health | Monitoring système |
+| 📤 **Upload** | http://localhost:8081/api/upload | Endpoint d'upload |
+| 📊 **Métriques** | http://localhost:8081/api/health/metrics | Métriques détaillées |
+
+### 🔧 Commandes de Maintenance Rapides
+
+```bash
+# Status complet
+docker-compose ps && curl -s http://localhost:8081/api/health | jq
+
+# Redémarrage rapide
+docker-compose restart
+
+# Logs en temps réel
+docker-compose logs -f --tail=50
+
+# Nettoyage complet
+docker-compose down && docker system prune -f && docker-compose up -d
+```
