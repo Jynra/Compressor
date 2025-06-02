@@ -1,15 +1,15 @@
-# 🗜️ Optimiseur de Fichiers Multimédia
+# 🗜️ Compressor - Optimiseur de Fichiers Multimédia
 
 Une solution self-hosted complète pour compresser et optimiser tous vos fichiers multimédia tout en conservant leur format original.
 
 ![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Node](https://img.shields.io/badge/node-%3E%3D16.0.0-brightgreen.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
 ![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
 
 ## 🎯 Objectif
 
-Réduire la taille de vos fichiers multimédia sans changer leur format, avec une interface web moderne et un backend performant utilisant FFmpeg.
+Réduire la taille de vos fichiers multimédia sans changer leur format, avec une interface web moderne et un backend performant utilisant FFmpeg et Sharp.
 
 ## ✨ Fonctionnalités
 
@@ -45,7 +45,7 @@ Réduire la taille de vos fichiers multimédia sans changer leur format, avec un
 ┌─────────────────┐    HTTP/WebSocket    ┌─────────────────┐
 │                 │ ◄─────────────────► │                 │
 │    Frontend     │                     │     Backend     │
-│   (React/Vue)   │                     │   (Node.js)     │
+│   (HTML/CSS/JS) │                     │   (Node.js)     │
 │                 │                     │                 │
 └─────────────────┘                     └─────────────────┘
                                                  │
@@ -53,83 +53,58 @@ Réduire la taille de vos fichiers multimédia sans changer leur format, avec un
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │                 │    │                 │    │                 │
 │   File Upload   │    │  Processing     │    │   FFmpeg        │
-│   & Settings    │    │     Queue       │    │  ImageMagick    │
+│   & Settings    │    │     Queue       │    │   Sharp         │
 │                 │    │   (Redis)       │    │   PDF-lib       │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## 🚀 Installation & Déploiement
+## 🚀 Installation Rapide avec Docker
 
-### Option 1 : Docker (Recommandé)
+### Prérequis
+- Docker et Docker Compose installés
+- 2GB RAM minimum
+- 10GB espace disque libre
 
-```bash
-# Cloner le repository
-git clone https://github.com/votre-username/file-optimizer.git
-cd file-optimizer
-
-# Lancer avec Docker Compose
-docker-compose up -d
-
-# L'application sera disponible sur http://localhost:3000
-```
-
-### Option 2 : Installation manuelle
-
-#### Prérequis
-
-- **Node.js** 16+ 
-- **FFmpeg** installé et dans le PATH
-- **ImageMagick** (optionnel, pour images avancées)
-- **Redis** (pour la queue de traitement)
-
-#### Backend
+### Déploiement en 3 étapes
 
 ```bash
-cd backend
-npm install
+# 1. Cloner le repository
+git clone https://github.com/your-username/compressor.git
+cd compressor
 
-# Configuration
+# 2. Configurer l'environnement
 cp .env.example .env
-# Éditer .env avec vos paramètres
+nano .env  # Modifier JWT_SECRET et CORS_ORIGIN
 
-# Lancer le serveur
-npm run dev
+# 3. Lancer Compressor
+docker-compose up -d
 ```
 
-#### Frontend
+**C'est tout ! 🎉**
 
-```bash
-cd frontend
-npm install
-npm run build
-npm start
-```
+### Accès à l'application
+- **Interface Web** : http://localhost:3001
+- **API** : http://localhost:8080
+- **Health Check** : http://localhost:8080/api/health
 
-## ⚙️ Configuration
+## 🔧 Configuration
 
-### Variables d'environnement
+### Variables d'environnement essentielles
 
 ```env
-# Backend
-PORT=8000
-REDIS_URL=redis://localhost:6379
-UPLOAD_MAX_SIZE=500MB
-TEMP_DIR=/tmp/uploads
-CLEANUP_INTERVAL=3600
+# Sécurité (OBLIGATOIRE à changer)
+JWT_SECRET=your-super-secret-key-change-this-NOW
 
-# FFmpeg
-FFMPEG_PATH=/usr/bin/ffmpeg
-FFPROBE_PATH=/usr/bin/ffprobe
+# CORS (URLs autorisées)
+CORS_ORIGIN=http://localhost:3001,https://your-domain.com
 
-# Security
-CORS_ORIGIN=http://localhost:3000
-JWT_SECRET=your-secret-key
-RATE_LIMIT=100
+# Stockage
+UPLOADS_PATH=./uploads
+LOGS_PATH=./logs
 
-# Storage
-STORAGE_TYPE=local # ou s3, gcs
-S3_BUCKET=your-bucket
-S3_REGION=eu-west-1
+# Performance
+WORKER_CONCURRENCY=2
+UPLOAD_MAX_SIZE=5368709120  # 5GB
 ```
 
 ### Paramètres de compression par défaut
@@ -145,8 +120,7 @@ S3_REGION=eu-west-1
   "videos": {
     "codec": "h264",
     "crf": 23,
-    "preset": "medium",
-    "maxBitrate": "2M"
+    "preset": "medium"
   },
   "audio": {
     "codec": "aac",
@@ -156,7 +130,7 @@ S3_REGION=eu-west-1
 }
 ```
 
-## 📊 Performances & Limites
+## 📊 Performances
 
 ### Performances typiques
 
@@ -167,206 +141,162 @@ S3_REGION=eu-west-1
 | **Audio FLAC**  | 200 MB     | 10-30 secondes     | 50-90%            |
 | **PDF**         | 100 MB     | 5-15 secondes      | 10-60%            |
 
-### Limites recommandées
+### Stack Compressor
 
-- **Fichier unique** : 5 GB max
-- **Traitement simultané** : 10 fichiers
-- **Stockage temporaire** : 50 GB
-- **Rétention** : 24 heures
+| Service | Port | Rôle |
+|---------|------|------|
+| **compressor-frontend** | 3001 | Interface utilisateur |
+| **compressor-app** | 8080 | API REST + WebSocket |
+| **compressor-worker** | - | Traitement fichiers |
+| **compressor-redis** | - | Queue + Cache |
 
-## 🛠️ API Documentation
+## 🛠️ Utilisation
 
-### Upload de fichier
+### Interface Web
+1. **Glissez-déposez** vos fichiers dans la zone d'upload
+2. **Ajustez** les paramètres de compression (optionnel)
+3. **Suivez** la progression en temps réel
+4. **Téléchargez** vos fichiers optimisés
 
-```http
-POST /api/upload
-Content-Type: multipart/form-data
+### API REST
 
-{
-  "file": [binary],
-  "settings": {
-    "quality": 80,
-    "maxWidth": 1920,
-    "format": "jpeg"
-  }
-}
+#### Upload d'un fichier
+```bash
+curl -X POST http://localhost:8080/api/upload \
+  -F "file=@image.jpg" \
+  -F 'settings={"quality":85,"maxWidth":1920}'
 ```
 
-### Statut du traitement
-
-```http
-GET /api/status/:jobId
-
-Response:
-{
-  "status": "processing|completed|error",
-  "progress": 45,
-  "originalSize": 15728640,
-  "compressedSize": 4718592,
-  "compressionRatio": 70,
-  "eta": 120
-}
+#### Récupérer le statut
+```bash
+curl http://localhost:8080/api/status/job-id
 ```
 
-### Téléchargement
-
-```http
-GET /api/download/:jobId
-
-Response: [binary file]
+#### Télécharger le résultat
+```bash
+curl http://localhost:8080/api/download/job-id -o optimized-image.jpg
 ```
 
-## 🔧 Développement
+### WebSocket (Temps réel)
+```javascript
+const socket = io('http://localhost:8080');
 
-### Structure du projet
+socket.on('job-progress', (data) => {
+    console.log(`Job ${data.jobId}: ${data.progress}%`);
+});
 
-```
-file-optimizer/
-├── backend/
-│   ├── src/
-│   │   ├── controllers/
-│   │   ├── services/
-│   │   ├── utils/
-│   │   └── workers/
-│   ├── tests/
-│   └── package.json
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   └── utils/
-│   ├── public/
-│   └── package.json
-├── docker-compose.yml
-└── README.md
+socket.on('job-completed', (data) => {
+    console.log(`Job terminé: ${data.compressionRatio}% de compression`);
+});
 ```
 
-### Lancer en mode développement
+## 🔍 Monitoring et Logs
+
+### Commandes utiles
 
 ```bash
-# Terminal 1 - Backend
-cd backend && npm run dev
+# Voir l'état de la stack
+docker-compose ps
 
-# Terminal 2 - Frontend  
-cd frontend && npm run dev
+# Logs en temps réel
+docker-compose logs -f
 
-# Terminal 3 - Redis
-redis-server
+# Stats de performance
+docker stats compressor-app compressor-worker
 
-# Terminal 4 - Worker
-cd backend && npm run worker
+# Health check
+curl http://localhost:8080/api/health
 ```
-
-### Tests
-
-```bash
-# Tests backend
-cd backend && npm test
-
-# Tests frontend
-cd frontend && npm test
-
-# Tests d'intégration
-npm run test:e2e
-```
-
-## 🐳 Docker
-
-### Dockerfile multi-stage
-
-```dockerfile
-# Frontend build
-FROM node:18-alpine AS frontend
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build
-
-# Backend avec FFmpeg
-FROM node:18-alpine AS backend
-RUN apk add --no-cache ffmpeg imagemagick
-WORKDIR /app
-COPY backend/package*.json ./
-RUN npm ci --only=production
-COPY backend/ ./
-COPY --from=frontend /app/frontend/dist ./public
-
-EXPOSE 8000
-CMD ["npm", "start"]
-```
-
-### Docker Compose
-
-```yaml
-version: '3.8'
-services:
-  app:
-    build: .
-    ports:
-      - "3000:8000"
-    environment:
-      - REDIS_URL=redis://redis:6379
-    volumes:
-      - uploads:/tmp/uploads
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-
-  worker:
-    build: .
-    command: npm run worker
-    environment:
-      - REDIS_URL=redis://redis:6379
-    volumes:
-      - uploads:/tmp/uploads
-    depends_on:
-      - redis
-
-volumes:
-  uploads:
-  redis_data:
-```
-
-## 📈 Monitoring & Logs
 
 ### Métriques disponibles
-
 - **Débit** : Fichiers traités par heure
 - **Temps de traitement** moyen par type
 - **Taux de compression** moyen
 - **Utilisation CPU/Mémoire**
-- **Erreurs** et causes
-
-### Intégrations
-
-- **Prometheus** + Grafana pour métriques
-- **Winston** pour logs structurés
-- **Sentry** pour monitoring erreurs
-- **Health checks** Docker
+- **Files d'attente** Redis
 
 ## 🔒 Sécurité
 
 ### Mesures implémentées
-
 - **Rate limiting** par IP
 - **Validation** stricte des fichiers uploadés
-- **Scan antivirus** optionnel (ClamAV)
-- **Chiffrement** des fichiers temporaires
-- **Nettoyage automatique** des fichiers
+- **Scan de signatures** (magic bytes)
+- **Isolation Docker** complète
+- **JWT** pour authentification
 - **CORS** configuré strictement
 
-### Recommandations
+### Recommandations production
+- Utiliser HTTPS avec reverse proxy
+- Configurer un pare-feu
+- Limiter l'accès réseau
+- Surveiller l'espace disque
+- Sauvegardes régulières
 
-- Utiliser HTTPS en production
-- Configurer un reverse proxy (Nginx)
-- Limiter les tailles d'upload
-- Monitorer l'espace disque
-- Sauvegardes régulières des configurations
+## 🛠️ Maintenance
+
+### Backup
+```bash
+# Sauvegarder les données
+docker run --rm \
+  -v compressor_uploads:/data \
+  -v $(pwd):/backup \
+  alpine tar czf /backup/compressor-backup-$(date +%Y%m%d).tar.gz -C /data .
+```
+
+### Mise à jour
+```bash
+# Arrêter, mettre à jour et redémarrer
+docker-compose down
+git pull origin main
+docker-compose build --no-cache
+docker-compose up -d
+```
+
+### Nettoyage
+```bash
+# Nettoyer les fichiers temporaires
+docker-compose exec compressor-app npm run cleanup
+
+# Nettoyer Docker
+docker system prune -a
+```
+
+## 🐛 Dépannage
+
+### Problèmes courants
+
+#### L'application ne démarre pas
+```bash
+# Vérifier les logs
+docker-compose logs compressor-app
+
+# Vérifier la configuration
+docker-compose config
+
+# Rebuilder complètement
+docker-compose build --no-cache
+```
+
+#### Erreur de connexion Redis
+```bash
+# Vérifier Redis
+docker-compose logs compressor-redis
+
+# Redémarrer Redis
+docker-compose restart compressor-redis
+```
+
+#### Upload échoue
+```bash
+# Vérifier l'espace disque
+df -h
+
+# Vérifier les permissions
+ls -la uploads/
+
+# Vérifier les logs d'upload
+docker-compose logs compressor-app | grep upload
+```
 
 ## 🤝 Contribution
 
@@ -377,7 +307,6 @@ volumes:
 5. **Ouvrir** une Pull Request
 
 ### Guidelines
-
 - Code formaté avec Prettier
 - Tests unitaires pour nouvelles fonctionnalités
 - Documentation mise à jour
@@ -387,7 +316,7 @@ volumes:
 
 ### Version 2.1
 - [ ] Support WebAssembly pour compression côté client
-- [ ] Interface mobile dédiée
+- [ ] Interface mobile dédiée  
 - [ ] Compression batch programmée
 - [ ] Intégration cloud storage (S3, GCS)
 
@@ -406,18 +335,16 @@ volumes:
 ## 🆘 Support
 
 ### Documentation
-- [Wiki complet](https://github.com/votre-username/file-optimizer/wiki)
-- [FAQ](https://github.com/votre-username/file-optimizer/wiki/FAQ)
-- [Troubleshooting](https://github.com/votre-username/file-optimizer/wiki/Troubleshooting)
+- [Wiki complet](https://github.com/your-username/compressor/wiki)
+- [FAQ](https://github.com/your-username/compressor/wiki/FAQ)
+- [Troubleshooting](https://github.com/your-username/compressor/wiki/Troubleshooting)
 
 ### Communauté
-- [Discord](https://discord.gg/file-optimizer)
-- [Forum](https://forum.file-optimizer.com)
-- [Issues GitHub](https://github.com/votre-username/file-optimizer/issues)
+- [Discord](https://discord.gg/compressor)
+- [Issues GitHub](https://github.com/your-username/compressor/issues)
 
 ### Support commercial
-- Email : support@file-optimizer.com
-- Consulting : consulting@file-optimizer.com
+- Email : support@compressor.com
 
 ## 📄 License
 
@@ -426,12 +353,24 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 ## 🙏 Remerciements
 
 - **FFmpeg** pour le moteur de traitement multimédia
-- **ImageMagick** pour le traitement d'images avancé
+- **Sharp** pour le traitement d'images avancé
 - **Redis** pour la gestion des queues
 - La communauté **open source** pour les contributions
 
 ---
 
-**Made with ❤️ by [Votre Nom]**
+**Made with ❤️ by Compressor Team**
 
-> 💡 **Astuce** : Commencez par la version Docker pour un déploiement rapide, puis personnalisez selon vos besoins !
+> 💡 **Astuce** : Commencez par `docker-compose up -d` pour un déploiement rapide, puis personnalisez selon vos besoins !
+
+## 🚀 Démarrage rapide
+
+```bash
+git clone https://github.com/your-username/compressor.git
+cd compressor
+cp .env.example .env
+nano .env  # Changer JWT_SECRET
+docker-compose up -d
+```
+
+**Votre Compressor est prêt sur http://localhost:3001 ! 🎉**
