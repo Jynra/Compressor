@@ -1,4 +1,6 @@
-# Dockerfile - Multi-stage build pour Compressor
+# Fichier: Dockerfile
+# Multi-stage build pour Compressor - Version Finale
+
 FROM node:18-alpine AS base
 
 # Installer les dépendances système requises
@@ -24,8 +26,12 @@ COPY backend/package*.json ./
 # ===========================================
 FROM base AS development
 
-# Installer toutes les dépendances (dev + prod)
-RUN npm ci --include=dev
+# Installation intelligente des dépendances
+RUN if [ -f "package-lock.json" ]; then \
+        npm ci --include=dev; \
+    else \
+        npm install --include=dev; \
+    fi
 
 # Copier le code source du backend
 COPY backend/ .
@@ -53,8 +59,12 @@ CMD ["npm", "run", "dev"]
 # ===========================================
 FROM base AS production
 
-# Installer seulement les dépendances de production
-RUN npm ci --only=production && npm cache clean --force
+# Installation intelligente des dépendances de production
+RUN if [ -f "package-lock.json" ]; then \
+        npm ci --only=production && npm cache clean --force; \
+    else \
+        npm install --only=production && npm cache clean --force; \
+    fi
 
 # Copier le code source du backend
 COPY backend/ .
@@ -88,7 +98,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Labels pour la métadonnées
+# Labels pour les métadonnées
 LABEL maintainer="Compressor Team" \
     version="2.0.0" \
     description="Optimiseur de fichiers multimédia" \
