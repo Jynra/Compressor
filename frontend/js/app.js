@@ -10,6 +10,118 @@ class FileOptimizer {
         this.socket = null;
         this.api = null;
         this.ui = null;
+        this.websocket = null;
+        
+        this.config = {
+            maxFileSize: 5 * 1024 * 1024 * 1024, // 5GB
+            supportedTypes: ['image', 'video', 'audio', 'document'],
+            apiEndpoint: window.location.origin + '/api'
+        };
+        
+        this.init();
+    }
+
+    /**
+     * Initialiser l'application
+     */
+    async init() {
+        try {
+            console.log('🚀 Initialisation File Optimizer');
+            
+            // Initialiser les modules
+            this.api = new ApiClient(this.config.apiEndpoint);
+            this.ui = new UIManager();
+            this.websocket = new WebSocketManager(this.config.apiEndpoint);
+            
+            // Configuration des événements
+            this.setupEventListeners();
+            this.setupWebSocketEvents();
+            
+            // Charger les données existantes
+            await this.loadExistingJobs();
+            await this.loadUploadInfo();
+            
+            // Marquer comme prêt
+            this.ui.setLoadingState(false);
+            this.ui.showStatus('Application prête', 'success');
+            
+            console.log('✅ File Optimizer initialisé');
+            
+        } catch (error) {
+            console.error('❌ Erreur initialisation:', error);
+            this.ui.showStatus('Erreur initialisation: ' + error.message, 'error');
+        }
+    }
+
+    /**
+     * Configuration des événements DOM
+     */
+    setupEventListeners() {
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const refreshJobs = document.getElementById('refreshJobs');
+        const clearCompleted = document.getElementById('clearCompleted');
+
+        // Upload zone drag & drop
+        uploadZone.addEventListener('click', () => fileInput.click());
+        uploadZone.addEventListener('dragover', this.handleDragOver.bind(this));
+        uploadZone.addEventListener('dragleave', this.handleDragLeave.bind(this));
+        uploadZone.addEventListener('drop', this.handleDrop.bind(this));
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            this.handleFiles(Array.from(e.target.files));
+        });
+
+        // Boutons de contrôle
+        if (refreshJobs) {
+            refreshJobs.addEventListener('click', () => this.loadExistingJobs());
+        }
+        
+        if (clearCompleted) {
+            clearCompleted.addEventListener('click', () => this.clearCompletedJobs());
+        }
+
+        // Fermeture notifications
+        document.addEventListener('click', (e) => {
+            if (e.target.id === 'statusClose') {
+                this.ui.hideStatus();
+            }
+        });
+
+        // Raccourcis clavier
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                switch (e.key) {
+                    case 'u': // Ctrl+U pour upload
+                        e.preventDefault();
+                        fileInput.click();
+                        break;
+                    case 'r': // Ctrl+R pour refresh
+                        if (e.shiftKey) {
+                            e.preventDefault();
+                            this.loadExistingJobs();
+                        }
+                        break;
+                }
+            }
+        });
+    }
+
+    /**
+     * Configuration des événements WebSocket
+     */
+    setupWebSocketEvents() {
+        this.websocket.on('connect', () => {
+            this.ui.setConnectionStatus(true);
+            console.log('🔌 WebSocket connecté');
+        });
+
+        this.websocket.on('disconnect', () => {
+            this.ui.setConnectionStatus(false);
+            console.log('🔌 WebSocket déconnecté');
+        });
+
         this.websocket.on('job-progress', (data) => {
             this.updateJobProgress(data.jobId, data.progress);
         });
@@ -470,116 +582,4 @@ window.addEventListener('beforeunload', () => {
     if (window.fileOptimizer) {
         window.fileOptimizer.destroy();
     }
-}); = null;
-        
-        this.config = {
-            maxFileSize: 5 * 1024 * 1024 * 1024, // 5GB
-            supportedTypes: ['image', 'video', 'audio', 'document'],
-            apiEndpoint: window.location.origin + '/api'
-        };
-        
-        this.init();
-    }
-
-    /**
-     * Initialiser l'application
-     */
-    async init() {
-        try {
-            console.log('🚀 Initialisation File Optimizer');
-            
-            // Initialiser les modules
-            this.api = new ApiClient(this.config.apiEndpoint);
-            this.ui = new UIManager();
-            this.websocket = new WebSocketManager(this.config.apiEndpoint);
-            
-            // Configuration des événements
-            this.setupEventListeners();
-            this.setupWebSocketEvents();
-            
-            // Charger les données existantes
-            await this.loadExistingJobs();
-            await this.loadUploadInfo();
-            
-            // Marquer comme prêt
-            this.ui.setLoadingState(false);
-            this.ui.showStatus('Application prête', 'success');
-            
-            console.log('✅ File Optimizer initialisé');
-            
-        } catch (error) {
-            console.error('❌ Erreur initialisation:', error);
-            this.ui.showStatus('Erreur initialisation: ' + error.message, 'error');
-        }
-    }
-
-    /**
-     * Configuration des événements DOM
-     */
-    setupEventListeners() {
-        const uploadZone = document.getElementById('uploadZone');
-        const fileInput = document.getElementById('fileInput');
-        const refreshJobs = document.getElementById('refreshJobs');
-        const clearCompleted = document.getElementById('clearCompleted');
-
-        // Upload zone drag & drop
-        uploadZone.addEventListener('click', () => fileInput.click());
-        uploadZone.addEventListener('dragover', this.handleDragOver.bind(this));
-        uploadZone.addEventListener('dragleave', this.handleDragLeave.bind(this));
-        uploadZone.addEventListener('drop', this.handleDrop.bind(this));
-
-        // File input change
-        fileInput.addEventListener('change', (e) => {
-            this.handleFiles(Array.from(e.target.files));
-        });
-
-        // Boutons de contrôle
-        if (refreshJobs) {
-            refreshJobs.addEventListener('click', () => this.loadExistingJobs());
-        }
-        
-        if (clearCompleted) {
-            clearCompleted.addEventListener('click', () => this.clearCompletedJobs());
-        }
-
-        // Fermeture notifications
-        document.addEventListener('click', (e) => {
-            if (e.target.id === 'statusClose') {
-                this.ui.hideStatus();
-            }
-        });
-
-        // Raccourcis clavier
-        document.addEventListener('keydown', (e) => {
-            if (e.ctrlKey || e.metaKey) {
-                switch (e.key) {
-                    case 'u': // Ctrl+U pour upload
-                        e.preventDefault();
-                        fileInput.click();
-                        break;
-                    case 'r': // Ctrl+R pour refresh
-                        if (e.shiftKey) {
-                            e.preventDefault();
-                            this.loadExistingJobs();
-                        }
-                        break;
-                }
-            }
-        });
-    }
-
-    /**
-     * Configuration des événements WebSocket
-     */
-    setupWebSocketEvents() {
-        this.websocket.on('connect', () => {
-            this.ui.setConnectionStatus(true);
-            console.log('🔌 WebSocket connecté');
-        });
-
-        this.websocket.on('disconnect', () => {
-            this.ui.setConnectionStatus(false);
-            console.log('🔌 WebSocket déconnecté');
-        });
-
-        this.websocket
+});
