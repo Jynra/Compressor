@@ -1,8 +1,7 @@
 # docker-compose.yml - Production simplifiée
 version: '3.8'
 
-# Nom de la stack (préfixe pour tous les containers/volumes/networks)
-name: compressor
+# Note: Le nom de projet sera défini par COMPOSE_PROJECT_NAME dans .env
 
 services:
   # Application backend
