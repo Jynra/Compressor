@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>File Optimizer - Compresseur de Fichiers</title>
     
     <!-- Styles CSS -->
@@ -12,7 +12,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.js"></script>
     
     <!-- Favicon et métadonnées -->
-    <link rel="icon" href="assets/favicon.ico" type="image/x-icon">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗜️</text></svg>" type="image/svg+xml">
     <meta name="description" content="Compressez et optimisez vos fichiers multimédia sans changer leur format">
     <meta name="keywords" content="compression fichiers, optimisation images, compresseur vidéo">
     <meta name="author" content="File Optimizer Team">
@@ -22,14 +22,27 @@
     <meta property="og:description" content="Compressez et optimisez vos fichiers multimédia sans changer leur format">
     <meta property="og:type" content="website">
     <meta property="og:image" content="assets/og-image.png">
+    
+    <!-- Security Headers -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+        style-src 'self' 'unsafe-inline';
+        connect-src 'self' ws: wss:;
+        img-src 'self' data: blob:;
+        font-src 'self' data:;
+    ">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta http-equiv="X-Frame-Options" content="DENY">
+    <meta http-equiv="X-XSS-Protection" content="1; mode=block">
 </head>
 <body>
     <div class="container">
         <!-- Header -->
         <header class="header">
             <h1>
-                <img src="assets/logo.svg" alt="File Optimizer" class="logo" />
-                File Optimizer
+                <span class="logo">🗜️</span>
+                <span class="title-text">File Optimizer</span>
             </h1>
             <p>Compressez et optimisez vos fichiers multimédia sans changer leur format</p>
         </header>
@@ -38,7 +51,7 @@
         <section class="upload-section">
             <div class="upload-zone" id="uploadZone">
                 <div class="upload-icon">
-                    <img src="assets/icons/upload.svg" alt="Upload" />
+                    📤
                 </div>
                 <div class="upload-text">Glissez vos fichiers ici ou cliquez pour sélectionner</div>
                 <div class="upload-subtext">
@@ -52,8 +65,8 @@
         <!-- Settings Panel -->
         <section class="settings-panel" id="settingsPanel">
             <h2 class="settings-title">
-                <img src="assets/icons/settings.svg" alt="Settings" class="section-icon" />
-                Paramètres de compression
+                <span class="section-icon">⚙️</span>
+                <span>Paramètres de compression</span>
             </h2>
             <div class="settings-grid" id="settingsGrid">
                 <!-- Les paramètres seront générés dynamiquement selon le type de fichier -->
@@ -63,23 +76,23 @@
         <!-- Jobs Section -->
         <section class="jobs-section">
             <h2 class="jobs-title">
-                <img src="assets/icons/list.svg" alt="Jobs" class="section-icon" />
-                Fichiers en traitement
+                <span class="section-icon">📋</span>
+                <span>Fichiers en traitement</span>
             </h2>
             <div class="jobs-controls">
                 <button class="btn btn-secondary" id="refreshJobs">
-                    <img src="assets/icons/refresh.svg" alt="Refresh" />
-                    Actualiser
+                    <span>🔄</span>
+                    <span>Actualiser</span>
                 </button>
                 <button class="btn btn-secondary" id="clearCompleted">
-                    <img src="assets/icons/clean.svg" alt="Clean" />
-                    Nettoyer terminés
+                    <span>🧹</span>
+                    <span>Nettoyer terminés</span>
                 </button>
             </div>
             <div id="jobsList">
                 <div class="empty-state">
                     <div class="empty-state-icon">
-                        <img src="assets/icons/empty-folder.svg" alt="Empty" />
+                        📁
                     </div>
                     <div>Aucun fichier en cours de traitement</div>
                     <div style="font-size: 0.9rem; margin-top: 0.5rem;">
@@ -111,11 +124,64 @@
         </div>
     </div>
 
-    <!-- JavaScript Files -->
+    <!-- JavaScript Files - ORDRE CRITIQUE -->
     <script src="js/utils.js"></script>
     <script src="js/api.js"></script>
     <script src="js/websocket.js"></script>
     <script src="js/ui.js"></script>
     <script src="js/app.js"></script>
+    
+    <!-- Error Handler Global -->
+    <script>
+        // Gestionnaire d'erreurs global
+        window.addEventListener('error', (event) => {
+            console.error('Erreur JavaScript:', event.error);
+            if (window.fileOptimizer && window.fileOptimizer.ui) {
+                window.fileOptimizer.ui.showStatus('Erreur inattendue détectée', 'error');
+            }
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('Promise rejetée:', event.reason);
+            if (window.fileOptimizer && window.fileOptimizer.ui) {
+                window.fileOptimizer.ui.showStatus('Erreur async non gérée', 'error');
+            }
+        });
+
+        // Vérification des modules requis
+        document.addEventListener('DOMContentLoaded', () => {
+            const requiredModules = ['Utils', 'ApiClient', 'WebSocketManager', 'UIManager'];
+            const missingModules = requiredModules.filter(module => !window[module]);
+            
+            if (missingModules.length > 0) {
+                console.error('Modules manquants:', missingModules);
+                document.body.innerHTML = `
+                    <div style="
+                        position: fixed; 
+                        top: 50%; 
+                        left: 50%; 
+                        transform: translate(-50%, -50%);
+                        background: #1e293b; 
+                        color: #f8fafc; 
+                        padding: 2rem; 
+                        border-radius: 12px; 
+                        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+                        text-align: center;
+                        max-width: 400px;
+                        border: 1px solid #334155;
+                    ">
+                        <h2 style="color: #ef4444; margin-bottom: 1rem;">❌ Erreur de Chargement</h2>
+                        <p style="margin-bottom: 1rem;">Modules JavaScript manquants:</p>
+                        <ul style="list-style: none; padding: 0; margin-bottom: 1.5rem;">
+                            ${missingModules.map(m => `<li style="color: #fbbf24;">• ${m}</li>`).join('')}
+                        </ul>
+                        <p style="font-size: 0.9rem; color: #cbd5e1;">
+                            Vérifiez que tous les fichiers .js sont présents et se chargent correctement.
+                        </p>
+                    </div>
+                `;
+            }
+        });
+    </script>
 </body>
 </html>
