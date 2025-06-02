@@ -1,4 +1,4 @@
-# docker-compose.yml - Production simplifiée
+# docker-compose.yml - Production avec Port Corrigé
 version: '3.8'
 
 # Note: Le nom de projet sera défini par COMPOSE_PROJECT_NAME dans .env
@@ -13,7 +13,7 @@ services:
     container_name: compressor-app
     restart: unless-stopped
     ports:
-      - "8080:8000"  # Port libre selon votre liste
+      - "8081:8000"  # ← PORT CHANGÉ de 8080 vers 8081
     environment:
       - NODE_ENV=production
       - PORT=8000
@@ -98,7 +98,7 @@ services:
     container_name: compressor-frontend
     restart: unless-stopped
     ports:
-      - "3001:80"  # Port libre selon votre liste
+      - "3001:80"  # Port frontend inchangé
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
