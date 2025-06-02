@@ -1,0 +1,145 @@
+# docker-compose.dev.yml - Configuration DÉVELOPPEMENT
+version: '3.8'
+
+services:
+  # Application en mode développement
+  app-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: file-optimizer-dev
+    ports:
+      - "8000:8000"
+      - "9229:9229" # Debug port Node.js
+    environment:
+      - NODE_ENV=development
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379
+      - TEMP_DIR=/app/uploads
+      - LOG_LEVEL=debug
+      - CORS_ORIGIN=http://localhost:3000,http://localhost:8080
+      - SKIP_RATE_LIMIT=true
+      - FFMPEG_PATH=/usr/bin/ffmpeg
+      - FFPROBE_PATH=/usr/bin/ffprobe
+      - JWT_SECRET=dev-secret-key
+      - CLEANUP_INTERVAL=1800  # 30min en dev
+      - FILE_RETENTION=3600    # 1h en dev
+      - UPLOAD_MAX_SIZE=1073741824  # 1GB en dev
+    volumes:
+      # Montage du code source pour hot reload
+      - ./backend:/app:cached
+      - uploads_dev:/app/uploads
+      - logs_dev:/app/logs
+      - node_modules:/app/node_modules
+    depends_on:
+      - redis
+    networks:
+      - file-optimizer-dev
+    command: npm run dev
+    # Pas de restart policy en dev
+    stdin_open: true
+    tty: true
+
+  # Worker en mode développement
+  worker-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: file-optimizer-worker-dev
+    environment:
+      - NODE_ENV=development
+      - REDIS_URL=redis://redis:6379
+      - TEMP_DIR=/app/uploads
+      - LOG_LEVEL=debug
+      - WORKER_CONCURRENCY=1  # Un seul worker en dev
+      - JOB_TIMEOUT=900       # 15min timeout en dev
+      - FFMPEG_PATH=/usr/bin/ffmpeg
+      - FFPROBE_PATH=/usr/bin/ffprobe
+    volumes:
+      - ./backend:/app:cached
+      - uploads_dev:/app/uploads
+      - logs_dev:/app/logs
+      - node_modules:/app/node_modules
+    depends_on:
+      - redis
+    networks:
+      - file-optimizer-dev
+    command: npm run worker
+    stdin_open: true
+    tty: true
+
+  # Redis pour le développement
+  redis:
+    image: redis:7-alpine
+    container_name: file-optimizer-redis-dev
+    ports:
+      - "6379:6379"  # Port exposé en dev pour debug
+    command: redis-server --appendonly yes --loglevel debug
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - file-optimizer-dev
+
+  # Frontend en mode développement
+  frontend-dev:
+    image: nginx:alpine
+    container_name: file-optimizer-frontend-dev
+    ports:
+      - "3000:80"
+    volumes:
+      # Montage direct du frontend pour hot reload
+      - ./frontend:/usr/share/nginx/html:cached
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app-dev
+    networks:
+      - file-optimizer-dev
+
+  # Outil de développement : Adminer pour Redis (optionnel)
+  redis-gui:
+    image: redislabs/redisinsight:latest
+    container_name: redis-insight-dev
+    ports:
+      - "8001:8001"
+    volumes:
+      - redis_insight_data:/db
+    networks:
+      - file-optimizer-dev
+    profiles:
+      - debug
+
+  # MailHog pour capturer emails en dev (optionnel)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: file-optimizer-mailhog-dev
+    ports:
+      - "1025:1025"  # SMTP port
+      - "8025:8025"  # Web UI port
+    networks:
+      - file-optimizer-dev
+    profiles:
+      - debug
+
+volumes:
+  uploads_dev:
+    driver: local
+  
+  logs_dev:
+    driver: local
+  
+  redis_data_dev:
+    driver: local
+  
+  redis_insight_data:
+    driver: local
+  
+  # Volume pour node_modules (évite conflits avec l'hôte)
+  node_modules:
+    driver: local
+
+networks:
+  file-optimizer-dev:
+    driver: bridge
+    name: file-optimizer-dev
