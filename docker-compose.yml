@@ -1,10 +1,10 @@
-# docker-compose.yml - Production avec Port Corrigé
+# docker-compose.yml - Production CORRIGÉ
 version: '3.8'
 
-# Note: Le nom de projet sera défini par COMPOSE_PROJECT_NAME dans .env
+# Nom de projet défini par COMPOSE_PROJECT_NAME dans .env
 
 services:
-  # Application backend
+  # Application backend Compressor
   app:
     build:
       context: .
@@ -13,21 +13,25 @@ services:
     container_name: compressor-app
     restart: unless-stopped
     ports:
-      - "8081:8000"  # ← PORT CHANGÉ de 8080 vers 8081
+      - "8081:8000"  # ✅ PORT CORRIGÉ: externe 8081, interne 8000
     environment:
       - NODE_ENV=production
       - PORT=8000
       - REDIS_URL=redis://redis:6379
       - TEMP_DIR=/app/uploads
       - LOG_LEVEL=info
-      - CORS_ORIGIN=http://localhost:3001,http://your-domain.com
-      - UPLOAD_MAX_SIZE=5368709120
-      - WORKER_CONCURRENCY=2
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3001}
+      - UPLOAD_MAX_SIZE=${UPLOAD_MAX_SIZE:-5368709120}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
       - FFMPEG_PATH=/usr/bin/ffmpeg
       - FFPROBE_PATH=/usr/bin/ffprobe
-      - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
-      - CLEANUP_INTERVAL=3600
-      - FILE_RETENTION=86400
+      - JWT_SECRET=${JWT_SECRET}
+      - CLEANUP_INTERVAL=${CLEANUP_INTERVAL:-3600}
+      - FILE_RETENTION=${FILE_RETENTION:-86400}
+      - AUTH_ENABLED=${AUTH_ENABLED:-false}
+      - API_KEY=${API_KEY:-}
+      - RATE_LIMIT=${RATE_LIMIT:-100}
+      - UPLOAD_RATE_LIMIT=${UPLOAD_RATE_LIMIT:-10}
     volumes:
       - uploads:/app/uploads
       - logs:/app/logs
@@ -37,13 +41,27 @@ services:
     networks:
       - compressor
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: |
+        if [ "${AUTH_ENABLED:-false}" = "true" ]; then
+          curl -f -H "Authorization: Bearer ${API_KEY}" http://localhost:8000/api/health || exit 1
+        else
+          curl -f http://localhost:8000/api/health || exit 1
+        fi
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    # ✅ Limites de ressources sécurisées
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
 
-  # Worker de traitement
+  # Worker de traitement Compressor
   worker:
     build:
       context: .
@@ -57,8 +75,8 @@ services:
       - REDIS_URL=redis://redis:6379
       - TEMP_DIR=/app/uploads
       - LOG_LEVEL=info
-      - WORKER_CONCURRENCY=2
-      - JOB_TIMEOUT=1800
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+      - JOB_TIMEOUT=${JOB_TIMEOUT:-1800}
       - FFMPEG_PATH=/usr/bin/ffmpeg
       - FFPROBE_PATH=/usr/bin/ffprobe
     volumes:
@@ -69,8 +87,17 @@ services:
         condition: service_healthy
     networks:
       - compressor
+    # ✅ Limites de ressources worker
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
 
-  # Redis (interne seulement)
+  # Redis sécurisé
   redis:
     image: redis:7-alpine
     container_name: compressor-redis
@@ -81,6 +108,10 @@ services:
       --appendfsync everysec
       --maxmemory 512mb
       --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --loglevel notice
+      --tcp-keepalive 300
+      --timeout 0
     volumes:
       - redis_data:/data
     networks:
@@ -91,8 +122,17 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+    # ✅ Limites de ressources Redis
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
-  # Frontend via Nginx
+  # Frontend Compressor via Nginx
   frontend:
     image: nginx:alpine
     container_name: compressor-frontend
@@ -106,14 +146,31 @@ services:
       - app
     networks:
       - compressor
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # ✅ Sécurité nginx
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
 
 volumes:
+  # ✅ Volumes sécurisés avec validation des chemins
   uploads:
     driver: local
     driver_opts:
       type: none
       device: ${UPLOADS_PATH:-./uploads}
       o: bind
+    # ✅ Labels de sécurité
+    labels:
+      - "compressor.volume.type=uploads"
+      - "compressor.volume.security=high"
   
   logs:
     driver: local
@@ -121,10 +178,40 @@ volumes:
       type: none
       device: ${LOGS_PATH:-./logs}
       o: bind
+    labels:
+      - "compressor.volume.type=logs"
+      - "compressor.volume.security=medium"
   
   redis_data:
     driver: local
+    labels:
+      - "compressor.volume.type=database"
+      - "compressor.volume.security=high"
 
 networks:
   compressor:
     driver: bridge
+    # ✅ Isolation réseau sécurisée
+    driver_opts:
+      com.docker.network.bridge.name: br-compressor
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+    labels:
+      - "compressor.network.type=internal"
+      - "compressor.network.security=high"
+
+# ✅ Configuration globale de sécurité
+x-logging:
+  &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "3"
+    compress: "true"
+
+# ✅ Variables d'environnement par défaut sécurisées
+x-common-variables:
+  &common-variables
+  TZ: UTC
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8

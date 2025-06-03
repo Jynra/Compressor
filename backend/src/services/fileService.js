@@ -1,11 +1,11 @@
-// backend/src/services/fileService.js
+// backend/src/services/fileService.js - CORRIGÉ ET SÉCURISÉ
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 
 /**
- * Service de gestion des fichiers
+ * Service de gestion des fichiers - SÉCURISÉ
  */
 class FileService {
     /**
@@ -17,6 +17,166 @@ class FileService {
         audio: ['.mp3', '.flac', '.wav', '.aac', '.ogg', '.m4a', '.wma'],
         documents: ['.pdf']
     };
+
+    /**
+     * ✅ FIX: Validation sécurisée des chemins de fichier
+     */
+    static validateSecurePath(requestedPath, allowedBaseDir) {
+        try {
+            // Normaliser les chemins
+            const normalizedRequested = path.normalize(requestedPath);
+            const normalizedBase = path.normalize(allowedBaseDir);
+            
+            // Résoudre en chemin absolu
+            const resolvedPath = path.resolve(normalizedRequested);
+            const resolvedBase = path.resolve(normalizedBase);
+            
+            // Vérifier que le fichier reste dans le répertoire autorisé
+            const isValid = resolvedPath.startsWith(resolvedBase + path.sep) || 
+                           resolvedPath === resolvedBase;
+            
+            if (!isValid) {
+                logger.security('Path traversal tenté', {
+                    requestedPath,
+                    allowedBaseDir,
+                    resolvedPath,
+                    resolvedBase
+                });
+            }
+            
+            return {
+                isValid,
+                resolvedPath: isValid ? resolvedPath : null,
+                relativePath: isValid ? path.relative(resolvedBase, resolvedPath) : null
+            };
+        } catch (error) {
+            logger.error('Erreur validation chemin:', error);
+            return {
+                isValid: false,
+                resolvedPath: null,
+                relativePath: null
+            };
+        }
+    }
+
+    /**
+     * ✅ FIX: Suppression sécurisée de fichier
+     */
+    static async deleteSecureFile(filePath, allowedBaseDir = null) {
+        try {
+            // Validation du chemin si répertoire de base fourni
+            if (allowedBaseDir) {
+                const pathValidation = this.validateSecurePath(filePath, allowedBaseDir);
+                if (!pathValidation.isValid) {
+                    throw new Error('Chemin de fichier non autorisé');
+                }
+                filePath = pathValidation.resolvedPath;
+            }
+            
+            // Vérifier que le fichier existe
+            await fs.access(filePath);
+            
+            // Supprimer le fichier
+            await fs.unlink(filePath);
+            
+            logger.file(`Fichier supprimé sécurisé: ${filePath}`);
+            return true;
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                logger.debug(`Fichier déjà supprimé: ${filePath}`);
+                return true; // Considérer comme succès si déjà supprimé
+            }
+            
+            logger.error(`Erreur suppression sécurisée ${filePath}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * ✅ FIX: Génération de nom de fichier ultra-sécurisée
+     */
+    static generateSecureFilename(originalName) {
+        try {
+            const ext = path.extname(originalName);
+            const timestamp = Date.now();
+            const randomBytes = crypto.randomBytes(8).toString('hex');
+            const uuid = crypto.randomUUID();
+            
+            // Nettoyer l'extension
+            const cleanExt = ext.replace(/[^a-zA-Z0-9.]/g, '').toLowerCase();
+            
+            // Générer nom ultra-sécurisé : UUID + timestamp + random + ext
+            return `${uuid}-${timestamp}-${randomBytes}${cleanExt}`;
+        } catch (error) {
+            logger.error('Erreur génération nom sécurisé:', error);
+            // Fallback ultra-sécurisé
+            return `secure-${Date.now()}-${Math.random().toString(36)}.bin`;
+        }
+    }
+
+    /**
+     * ✅ FIX: Lecture sécurisée des métadonnées de fichier
+     */
+    static async getFileStatsSecure(filePath, allowedBaseDir = null) {
+        try {
+            // Validation du chemin si répertoire de base fourni
+            if (allowedBaseDir) {
+                const pathValidation = this.validateSecurePath(filePath, allowedBaseDir);
+                if (!pathValidation.isValid) {
+                    logger.security('Tentative lecture fichier non autorisée', {
+                        filePath,
+                        allowedBaseDir
+                    });
+                    return null;
+                }
+                filePath = pathValidation.resolvedPath;
+            }
+            
+            const stats = await fs.stat(filePath);
+            return {
+                size: stats.size,
+                created: stats.birthtime,
+                modified: stats.mtime,
+                isFile: stats.isFile(),
+                isDirectory: stats.isDirectory(),
+                permissions: stats.mode,
+                secureRead: true
+            };
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                logger.error(`Erreur lecture stats sécurisée ${filePath}:`, error);
+            }
+            return null;
+        }
+    }
+
+    /**
+     * ✅ FIX: Création de répertoire sécurisée
+     */
+    static async ensureDirectoryExistsSecure(dirPath, allowedBaseDir = null) {
+        try {
+            // Validation du chemin si répertoire de base fourni
+            if (allowedBaseDir) {
+                const pathValidation = this.validateSecurePath(dirPath, allowedBaseDir);
+                if (!pathValidation.isValid) {
+                    throw new Error('Répertoire non autorisé');
+                }
+                dirPath = pathValidation.resolvedPath;
+            }
+            
+            await fs.access(dirPath);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                await fs.mkdir(dirPath, { 
+                    recursive: true,
+                    mode: 0o755 // Permissions sécurisées
+                });
+                logger.info(`Répertoire créé sécurisé: ${dirPath}`);
+            } else {
+                throw error;
+            }
+        }
+    }
 
     /**
      * Obtenir tous les formats supportés
@@ -49,7 +209,7 @@ class FileService {
     }
 
     /**
-     * Générer un nom de fichier unique
+     * Générer un nom de fichier unique (legacy - utiliser generateSecureFilename)
      */
     static generateUniqueFilename(originalName) {
         const ext = path.extname(originalName);
@@ -64,7 +224,7 @@ class FileService {
     }
 
     /**
-     * Créer un répertoire s'il n'existe pas
+     * Créer un répertoire s'il n'existe pas (legacy - utiliser ensureDirectoryExistsSecure)
      */
     static async ensureDirectoryExists(dirPath) {
         try {
@@ -76,36 +236,17 @@ class FileService {
     }
 
     /**
-     * Obtenir les statistiques d'un fichier
+     * Obtenir les statistiques d'un fichier (legacy - utiliser getFileStatsSecure)
      */
     static async getFileStats(filePath) {
-        try {
-            const stats = await fs.stat(filePath);
-            return {
-                size: stats.size,
-                created: stats.birthtime,
-                modified: stats.mtime,
-                isFile: stats.isFile(),
-                isDirectory: stats.isDirectory()
-            };
-        } catch (error) {
-            logger.error(`Erreur stats fichier ${filePath}:`, error);
-            return null;
-        }
+        return await this.getFileStatsSecure(filePath);
     }
 
     /**
-     * Supprimer un fichier
+     * Supprimer un fichier (legacy - utiliser deleteSecureFile)
      */
     static async deleteFile(filePath) {
-        try {
-            await fs.unlink(filePath);
-            logger.info(`Fichier supprimé: ${filePath}`);
-            return true;
-        } catch (error) {
-            logger.error(`Erreur suppression ${filePath}:`, error);
-            return false;
-        }
+        return await this.deleteSecureFile(filePath);
     }
 
     /**
@@ -223,7 +364,7 @@ class FileService {
                     
                     if (age > maxAge) {
                         totalSize += stats.size;
-                        if (await this.deleteFile(filePath)) {
+                        if (await this.deleteSecureFile(filePath, tempDir)) {
                             cleanedCount++;
                         }
                     }

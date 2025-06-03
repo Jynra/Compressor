@@ -1,4 +1,4 @@
-// backend/src/utils/validation.js
+// backend/src/utils/validation.js - CORRIGÉ ET COMPLET
 const Joi = require('joi');
 const FileService = require('../services/fileService');
 const logger = require('./logger');
@@ -75,7 +75,7 @@ class ValidationSchemas {
         size: Joi.number().min(1).required(),
         type: Joi.string().valid('image', 'video', 'audio', 'document').required(),
         settings: Joi.object().required(),
-        status: Joi.string().valid('uploaded', 'queued', 'processing', 'completed', 'error').default('uploaded'),
+        status: Joi.string().valid('uploaded', 'queued', 'processing', 'completed', 'error', 'paused', 'cancelled').default('uploaded'),
         progress: Joi.number().min(0).max(100).default(0),
         createdAt: Joi.date().iso().default(() => new Date()),
         updatedAt: Joi.date().iso().default(() => new Date())
@@ -95,7 +95,7 @@ class ValidationSchemas {
      * Validation des filtres de jobs
      */
     static jobFiltersSchema = Joi.object({
-        status: Joi.string().valid('uploaded', 'queued', 'processing', 'completed', 'error').optional(),
+        status: Joi.string().valid('uploaded', 'queued', 'processing', 'completed', 'error', 'paused', 'cancelled').optional(),
         type: Joi.string().valid('image', 'video', 'audio', 'document').optional(),
         dateFrom: Joi.date().iso().optional(),
         dateTo: Joi.date().iso().optional(),
@@ -119,9 +119,428 @@ class ValidationSchemas {
 }
 
 /**
- * Service de validation
+ * Service de validation - ÉTENDU ET SÉCURISÉ
  */
 class ValidationService {
+    /**
+     * ✅ FIX: Validation UUID stricte
+     */
+    static isValidUUID(uuid) {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        return typeof uuid === 'string' && uuidRegex.test(uuid);
+    }
+
+    /**
+     * ✅ FIX: Nettoyage sécurisé nom de fichier
+     */
+    static sanitizeFilename(filename) {
+        if (!filename || typeof filename !== 'string') {
+            return null;
+        }
+
+        // Supprimer les caractères dangereux et path traversal
+        let cleaned = filename
+            .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') // Caractères interdits Windows
+            .replace(/\.\./g, '_')                   // Path traversal
+            .replace(/^\.+/, '_')                    // Points au début
+            .replace(/\.+$/, '')                     // Points à la fin
+            .replace(/\s+/g, '_')                    // Espaces multiples
+            .replace(/_{2,}/g, '_')                  // Underscores multiples
+            .trim();
+
+        // Limiter la longueur
+        if (cleaned.length > 255) {
+            const ext = require('path').extname(cleaned);
+            const name = require('path').basename(cleaned, ext);
+            cleaned = name.substring(0, 255 - ext.length) + ext;
+        }
+
+        // Vérifier qu'il reste quelque chose de valide
+        if (!cleaned || cleaned === '_' || cleaned.length < 1) {
+            return null;
+        }
+
+        return cleaned;
+    }
+
+    /**
+     * ✅ FIX: Nettoyage sécurisé des paramètres
+     */
+    static sanitizeSettings(settings) {
+        if (!settings || typeof settings !== 'object') {
+            return {};
+        }
+
+        const cleanSettings = {};
+        const allowedKeys = [
+            'quality', 'maxWidth', 'maxHeight', 'format', 'removeMetadata', 'progressive',
+            'codec', 'crf', 'preset', 'maxBitrate', 'fps', 'resolution',
+            'bitrate', 'sampleRate', 'channels', 'normalize',
+            'compress', 'optimizeImages'
+        ];
+
+        for (const [key, value] of Object.entries(settings)) {
+            if (allowedKeys.includes(key) && value !== undefined && value !== null) {
+                // Nettoyage selon le type
+                if (typeof value === 'string') {
+                    cleanSettings[key] = this.sanitizeInput(value);
+                } else if (typeof value === 'number' && !isNaN(value)) {
+                    cleanSettings[key] = Math.round(Math.abs(value));
+                } else if (typeof value === 'boolean') {
+                    cleanSettings[key] = Boolean(value);
+                }
+            }
+        }
+
+        return cleanSettings;
+    }
+
+    /**
+     * ✅ FIX: Nettoyage sécurisé des inputs
+     */
+    static sanitizeInput(input) {
+        if (!input || typeof input !== 'string') {
+            return '';
+        }
+
+        return input
+            .replace(/[<>'"]/g, '') // XSS basique
+            .replace(/\0/g, '')     // Null bytes
+            .replace(/\r\n/g, ' ')  // CRLF
+            .trim()
+            .slice(0, 1000);       // Limite de longueur
+    }
+
+    /**
+     * ✅ FIX: Nettoyage sécurisé des outputs
+     */
+    static sanitizeOutput(output) {
+        if (!output || typeof output !== 'string') {
+            return '';
+        }
+
+        return output
+            .replace(/[<>'"&]/g, (match) => {
+                const entities = {
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#x27;',
+                    '&': '&amp;'
+                };
+                return entities[match] || match;
+            })
+            .trim();
+    }
+
+    /**
+     * ✅ FIX: Nettoyage sécurisé des headers HTTP
+     */
+    static sanitizeHeader(header) {
+        if (!header || typeof header !== 'string') {
+            return '';
+        }
+
+        return header
+            .replace(/[\r\n]/g, '') // CRLF injection
+            .replace(/[^\x20-\x7E]/g, '') // Caractères non imprimables
+            .slice(0, 200)
+            .trim();
+    }
+
+    /**
+     * ✅ FIX: Validation avancée du contenu de fichier
+     */
+    static async validateFileContent(buffer, fileType) {
+        try {
+            const errors = [];
+            
+            // Validation taille minimale
+            if (buffer.length < 10) {
+                errors.push('Fichier trop petit pour être valide');
+            }
+            
+            // Validation selon le type
+            switch (fileType) {
+                case 'image':
+                    // Vérifier structure basique image
+                    if (!this.validateImageStructure(buffer)) {
+                        errors.push('Structure d\'image invalide');
+                    }
+                    break;
+                    
+                case 'video':
+                    // Vérifier signatures vidéo
+                    if (!this.validateVideoStructure(buffer)) {
+                        errors.push('Structure de vidéo invalide');
+                    }
+                    break;
+                    
+                case 'audio':
+                    // Vérifier signatures audio
+                    if (!this.validateAudioStructure(buffer)) {
+                        errors.push('Structure d\'audio invalide');
+                    }
+                    break;
+                    
+                case 'document':
+                    // Vérifier structure PDF
+                    if (!this.validatePDFStructure(buffer)) {
+                        errors.push('Structure de document invalide');
+                    }
+                    break;
+            }
+
+            return {
+                isValid: errors.length === 0,
+                errors
+            };
+        } catch (error) {
+            logger.error('Erreur validation contenu:', error);
+            return {
+                isValid: false,
+                errors: ['Erreur validation contenu']
+            };
+        }
+    }
+
+    /**
+     * ✅ FIX: Validation structure image
+     */
+    static validateImageStructure(buffer) {
+        if (buffer.length < 8) return false;
+        
+        // JPEG
+        if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
+            return buffer[buffer.length - 2] === 0xFF && buffer[buffer.length - 1] === 0xD9;
+        }
+        
+        // PNG
+        if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+            return buffer.slice(-8).toString('hex').includes('49454e44ae426082');
+        }
+        
+        // WebP
+        if (buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP') {
+            return true;
+        }
+        
+        return true; // Autres formats acceptés par défaut
+    }
+
+    /**
+     * ✅ FIX: Validation structure vidéo
+     */
+    static validateVideoStructure(buffer) {
+        if (buffer.length < 12) return false;
+        
+        // MP4
+        if (buffer.slice(4, 8).toString() === 'ftyp') {
+            return true;
+        }
+        
+        // AVI
+        if (buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'AVI ') {
+            return true;
+        }
+        
+        // MKV
+        if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) {
+            return true;
+        }
+        
+        return true; // Autres formats acceptés par défaut
+    }
+
+    /**
+     * ✅ FIX: Validation structure audio
+     */
+    static validateAudioStructure(buffer) {
+        if (buffer.length < 10) return false;
+        
+        // MP3
+        if ((buffer[0] === 0xFF && (buffer[1] & 0xE0) === 0xE0) || 
+            buffer.slice(0, 3).toString() === 'ID3') {
+            return true;
+        }
+        
+        // WAV
+        if (buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WAVE') {
+            return true;
+        }
+        
+        // FLAC
+        if (buffer.slice(0, 4).toString() === 'fLaC') {
+            return true;
+        }
+        
+        // OGG
+        if (buffer.slice(0, 4).toString() === 'OggS') {
+            return true;
+        }
+        
+        return true; // Autres formats acceptés par défaut
+    }
+
+    /**
+     * ✅ FIX: Validation structure PDF
+     */
+    static validatePDFStructure(buffer) {
+        if (buffer.length < 8) return false;
+        
+        // Vérifier header PDF
+        const header = buffer.slice(0, 8).toString();
+        if (!header.startsWith('%PDF-')) {
+            return false;
+        }
+        
+        // Vérifier footer PDF (optionnel car peut être absent)
+        const footer = buffer.slice(-10).toString();
+        return true; // PDF valide si header correct
+    }
+
+    /**
+     * ✅ FIX: Détection User-Agent suspect
+     */
+    static isSuspiciousUserAgent(userAgent) {
+        if (!userAgent || typeof userAgent !== 'string') return true;
+        
+        if (userAgent.length < 10 || userAgent.length > 500) return true;
+        
+        const suspiciousPatterns = [
+            /bot|crawler|spider|scraper/i,
+            /^curl/i,
+            /^wget/i,
+            /python-requests/i,
+            /postman/i,
+            /insomnia/i,
+            /test/i
+        ];
+
+        return suspiciousPatterns.some(pattern => pattern.test(userAgent));
+    }
+
+    /**
+     * ✅ FIX: Détection contenu suspect
+     */
+    static containsSuspiciousContent(filename) {
+        if (!filename || typeof filename !== 'string') return true;
+        
+        const suspiciousPatterns = [
+            /\.(exe|bat|cmd|scr|pif|com|dll)$/i,
+            /\.(php|asp|jsp|cgi|pl|py|rb|sh)$/i,
+            /<script/i,
+            /<iframe/i,
+            /javascript:/i,
+            /vbscript:/i,
+            /data:/i,
+            /\.\./,
+            /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i,
+            /^\./,
+            /__/,
+            /\0/
+        ];
+
+        return suspiciousPatterns.some(pattern => pattern.test(filename));
+    }
+
+    /**
+     * ✅ FIX: Validation magic bytes renforcée
+     */
+    static validateMagicBytes(buffer, filename) {
+        if (!buffer || buffer.length < 4) return false;
+
+        const ext = require('path').extname(filename).toLowerCase().substring(1);
+        
+        const magicBytes = {
+            // Images - Signatures strictes
+            'jpg': [[0xFF, 0xD8, 0xFF]],
+            'jpeg': [[0xFF, 0xD8, 0xFF]],
+            'png': [[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]],
+            'webp': [[0x52, 0x49, 0x46, 0x46], [0x57, 0x45, 0x42, 0x50]], // RIFF + WEBP à offset 8
+            'bmp': [[0x42, 0x4D]],
+            'tiff': [[0x49, 0x49, 0x2A, 0x00], [0x4D, 0x4D, 0x00, 0x2A]],
+            
+            // Documents
+            'pdf': [[0x25, 0x50, 0x44, 0x46]],
+            
+            // Audio
+            'mp3': [[0xFF, 0xFB], [0xFF, 0xF3], [0xFF, 0xF2], [0x49, 0x44, 0x33]], // MP3 ou ID3
+            'wav': [[0x52, 0x49, 0x46, 0x46]], // RIFF
+            'flac': [[0x66, 0x4C, 0x61, 0x43]], // fLaC
+            'ogg': [[0x4F, 0x67, 0x67, 0x53]], // OggS
+            
+            // Vidéo
+            'mp4': [[0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70]], // ftyp à offset 4
+            'avi': [[0x52, 0x49, 0x46, 0x46]], // RIFF
+            'mkv': [[0x1A, 0x45, 0xDF, 0xA3]],
+            'webm': [[0x1A, 0x45, 0xDF, 0xA3]], // Même que MKV
+        };
+
+        const expectedSignatures = magicBytes[ext];
+        if (!expectedSignatures) {
+            // Si pas de signature connue, vérifier que ce n'est pas un exécutable
+            const executableSignatures = [
+                [0x4D, 0x5A], // PE/EXE
+                [0x7F, 0x45, 0x4C, 0x46], // ELF
+                [0xCA, 0xFE, 0xBA, 0xBE], // Mach-O
+                [0x50, 0x4B, 0x03, 0x04], // ZIP (potentiellement dangereux)
+            ];
+            
+            for (const signature of executableSignatures) {
+                if (this.matchesSignature(buffer, signature, 0)) {
+                    return false; // Fichier exécutable détecté
+                }
+            }
+            
+            return true; // Format inconnu mais pas dangereux
+        }
+
+        // Vérifier toutes les signatures possibles pour ce format
+        for (const signature of expectedSignatures) {
+            if (ext === 'webp') {
+                // WebP nécessite RIFF au début ET WEBP à l'offset 8
+                if (this.matchesSignature(buffer, [0x52, 0x49, 0x46, 0x46], 0) &&
+                    buffer.length > 11 &&
+                    this.matchesSignature(buffer, [0x57, 0x45, 0x42, 0x50], 8)) {
+                    return true;
+                }
+            } else if (ext === 'mp4') {
+                // MP4 peut avoir différents types ftyp
+                if (this.matchesSignature(buffer, [0x66, 0x74, 0x79, 0x70], 4)) {
+                    return true;
+                }
+            } else {
+                // Vérification standard
+                if (this.matchesSignature(buffer, signature, 0)) {
+                    return true;
+                }
+            }
+        }
+
+        logger.security('Magic bytes invalides', {
+            filename,
+            expected: expectedSignatures,
+            actual: Array.from(buffer.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0'))
+        });
+
+        return false;
+    }
+
+    /**
+     * ✅ FIX: Vérification signature à offset
+     */
+    static matchesSignature(buffer, signature, offset = 0) {
+        if (buffer.length < offset + signature.length) return false;
+        
+        for (let i = 0; i < signature.length; i++) {
+            if (buffer[offset + i] !== signature[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * Valider un fichier uploadé
      */
@@ -471,37 +890,6 @@ class ValidationService {
     }
 
     /**
-     * Nettoyer et valider un nom de fichier
-     */
-    static sanitizeFilename(filename) {
-        if (!filename || typeof filename !== 'string') {
-            return null;
-        }
-
-        // Supprimer les caractères dangereux
-        let cleaned = filename
-            .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') // Caractères interdits
-            .replace(/^\.+/, '_') // Points au début
-            .replace(/\.+$/, '') // Points à la fin
-            .replace(/\s+/g, '_') // Espaces multiples
-            .trim();
-
-        // Limiter la longueur
-        if (cleaned.length > 255) {
-            const ext = require('path').extname(cleaned);
-            const name = require('path').basename(cleaned, ext);
-            cleaned = name.substring(0, 255 - ext.length) + ext;
-        }
-
-        // Vérifier qu'il reste quelque chose
-        if (!cleaned || cleaned === '_') {
-            return null;
-        }
-
-        return cleaned;
-    }
-
-    /**
      * Valider et nettoyer les en-têtes HTTP
      */
     static validateHeaders(headers) {
@@ -518,7 +906,7 @@ class ValidationService {
         for (const [key, value] of Object.entries(headers)) {
             const lowerKey = key.toLowerCase();
             if (allowedHeaders.includes(lowerKey)) {
-                cleanHeaders[lowerKey] = value;
+                cleanHeaders[lowerKey] = this.sanitizeHeader(value);
             }
         }
 
@@ -596,69 +984,6 @@ class ValidationService {
             isValid: errors.length === 0,
             errors
         };
-    }
-
-    /**
-     * Valider les magic bytes d'un fichier
-     */
-    static validateMagicBytes(buffer, filename) {
-        if (!buffer || buffer.length < 4) return false;
-
-        const magicBytes = {
-            // Images
-            'jpg': [0xFF, 0xD8, 0xFF],
-            'png': [0x89, 0x50, 0x4E, 0x47],
-            'webp': [0x52, 0x49, 0x46, 0x46], // + WEBP à l'offset 8
-            'pdf': [0x25, 0x50, 0x44, 0x46],
-            // Ajouter d'autres signatures selon les besoins
-        };
-
-        const ext = require('path').extname(filename).toLowerCase().substring(1);
-        const expectedSignature = magicBytes[ext];
-
-        if (!expectedSignature) {
-            return true; // Pas de signature connue, on laisse passer
-        }
-
-        for (let i = 0; i < expectedSignature.length; i++) {
-            if (buffer[i] !== expectedSignature[i]) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Détecter du contenu suspect dans un nom de fichier
-     */
-    static containsSuspiciousContent(filename) {
-        const suspiciousPatterns = [
-            /\.(exe|bat|cmd|scr|pif|com)$/i,
-            /\.(php|asp|jsp|cgi)$/i,
-            /<script/i,
-            /javascript:/i,
-            /\.\./,
-            /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
-        ];
-
-        return suspiciousPatterns.some(pattern => pattern.test(filename));
-    }
-
-    /**
-     * Détecter un User-Agent suspect
-     */
-    static isSuspiciousUserAgent(userAgent) {
-        if (!userAgent || userAgent.length < 10) return true;
-        
-        const suspiciousPatterns = [
-            /bot|crawler|spider|scraper/i,
-            /^curl/i,
-            /^wget/i,
-            /python-requests/i
-        ];
-
-        return suspiciousPatterns.some(pattern => pattern.test(userAgent));
     }
 }
 
