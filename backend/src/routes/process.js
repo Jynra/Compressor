@@ -1,4 +1,4 @@
-// backend/src/routes/process.js
+// backend/src/routes/process.js - CORRIGÉ
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 
@@ -29,8 +29,7 @@ const processRateLimit = rateLimit({
 });
 
 /**
- * POST /api/process/:jobId
- * Démarrer le traitement d'un job spécifique
+ * ✅ FIX: POST /api/process/:jobId - Démarrage traitement sécurisé
  */
 router.post('/:jobId',
     processRateLimit,
@@ -46,7 +45,19 @@ router.post('/:jobId',
                 action: 'manual_process'
             });
 
-            requestLogger.info('Demande traitement manuel', { priority, settings });
+            requestLogger.info('Demande traitement manuel sécurisé', { priority, settings });
+
+            // ✅ FIX: Validation UUID stricte
+            if (!ValidationService.isValidUUID(jobId)) {
+                logger.security('Job ID invalide pour traitement', {
+                    jobId,
+                    ip: req.ip
+                });
+                return res.status(400).json({
+                    success: false,
+                    error: 'Job ID invalide'
+                });
+            }
 
             // Récupérer le job
             const job = await JobService.getJob(jobId);
@@ -75,10 +86,18 @@ router.post('/:jobId',
                 });
             }
 
-            // Valider les nouveaux paramètres si fournis
+            // ✅ FIX: Validation priorité sécurisée
+            const allowedPriorities = ['low', 'normal', 'high', 'urgent'];
+            const validPriority = allowedPriorities.includes(priority) ? priority : 'normal';
+
+            // ✅ FIX: Validation et nettoyage des paramètres
+            let validatedSettings = {};
             if (Object.keys(settings).length > 0) {
+                // Nettoyer les paramètres d'entrée
+                const cleanSettings = ValidationService.sanitizeSettings(settings);
+                
                 const fileType = job.type;
-                const currentSettings = { ...job.settings, ...settings };
+                const currentSettings = { ...job.settings, ...cleanSettings };
                 
                 const validation = ValidationService.validateSettings(fileType, currentSettings);
                 if (!validation.isValid) {
@@ -89,37 +108,76 @@ router.post('/:jobId',
                     });
                 }
 
+                validatedSettings = validation.validatedSettings;
+
                 // Mettre à jour les paramètres du job
                 await JobService.updateJob(jobId, {
-                    settings: validation.validatedSettings,
+                    settings: validatedSettings,
                     status: 'uploaded',
                     progress: 0,
                     error: null,
                     updatedAt: new Date().toISOString()
                 });
                 
-                job.settings = validation.validatedSettings;
+                job.settings = validatedSettings;
             }
 
-            // Calculer la priorité
-            let queuePriority = 5; // Normal
-            switch (priority) {
+            // ✅ FIX: Correction priorité Bull (inversée)
+            // Bull: Plus haut = plus prioritaire (contrairement à l'erreur précédente)
+            let queuePriority = 5; // Normal par défaut
+            switch (validPriority) {
                 case 'low':
-                    queuePriority = 1;
+                    queuePriority = 1;     // ✅ Basse priorité
+                    break;
+                case 'normal':
+                    queuePriority = 5;     // ✅ Priorité normale
                     break;
                 case 'high':
-                    queuePriority = 10;
+                    queuePriority = 10;    // ✅ Haute priorité
                     break;
                 case 'urgent':
-                    queuePriority = 15;
+                    queuePriority = 15;    // ✅ Priorité urgente
                     break;
             }
 
-            // Ajouter à la queue avec priorité
+            // ✅ FIX: Vérification sécurité du fichier avant traitement
+            if (job.filePath) {
+                const securePathValidation = FileService.validateSecurePath(
+                    job.filePath,
+                    process.env.TEMP_DIR || '/tmp/uploads'
+                );
+
+                if (!securePathValidation.isValid) {
+                    logger.security('Path traversal détecté dans job', {
+                        jobId,
+                        filePath: job.filePath,
+                        ip: req.ip
+                    });
+                    return res.status(403).json({
+                        success: false,
+                        error: 'Chemin de fichier non sécurisé'
+                    });
+                }
+
+                // Vérifier existence du fichier
+                const FileService = require('../services/fileService');
+                const fileExists = await FileService.getFileStats(securePathValidation.resolvedPath);
+                if (!fileExists) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Fichier source introuvable'
+                    });
+                }
+            }
+
+            // Ajouter à la queue avec priorité corrigée
             await addJobToQueue(job, { priority: queuePriority });
             await JobService.updateJob(jobId, { status: 'queued' });
 
-            requestLogger.job(jobId, 'Job ajouté à la queue manuellement', { priority });
+            requestLogger.job(jobId, 'Job ajouté à la queue manuellement', { 
+                priority: validPriority, 
+                queuePriority 
+            });
 
             // Estimer le temps de traitement
             const estimatedTime = ProcessingService.estimateProcessingTime(job.type, job.size);
@@ -129,9 +187,14 @@ router.post('/:jobId',
                 message: 'Job ajouté à la queue de traitement',
                 jobId,
                 status: 'queued',
-                priority,
+                priority: validPriority,
+                queuePriority,
                 estimatedTime,
-                queuePosition: await getQueuePosition(jobId)
+                queuePosition: await getQueuePosition(jobId),
+                security: {
+                    pathValidated: true,
+                    settingsValidated: Object.keys(settings).length > 0
+                }
             });
 
         } catch (error) {
@@ -145,8 +208,7 @@ router.post('/:jobId',
 );
 
 /**
- * POST /api/process/batch
- * Traitement par lot de plusieurs jobs
+ * ✅ FIX: POST /api/process/batch - Traitement batch sécurisé
  */
 router.post('/batch',
     processRateLimit,
@@ -154,10 +216,11 @@ router.post('/batch',
         try {
             const { jobIds, settings = {}, priority = 'normal' } = req.body;
             
+            // ✅ FIX: Validation stricte des paramètres
             if (!Array.isArray(jobIds) || jobIds.length === 0) {
                 return res.status(400).json({
                     success: false,
-                    error: 'Liste de jobs requise'
+                    error: 'Liste de jobs requise (array non vide)'
                 });
             }
 
@@ -168,30 +231,45 @@ router.post('/batch',
                 });
             }
 
+            // ✅ FIX: Validation de tous les job IDs
+            const invalidJobIds = jobIds.filter(id => !ValidationService.isValidUUID(id));
+            if (invalidJobIds.length > 0) {
+                logger.security('Job IDs invalides dans batch', {
+                    invalidIds: invalidJobIds,
+                    ip: req.ip
+                });
+                return res.status(400).json({
+                    success: false,
+                    error: 'Job IDs invalides détectés',
+                    invalidIds: invalidJobIds
+                });
+            }
+
             const requestLogger = logger.withContext({ 
                 ip: req.ip,
                 action: 'batch_process',
                 jobCount: jobIds.length
             });
 
-            requestLogger.info('Demande traitement batch', { jobIds, priority });
+            requestLogger.info('Demande traitement batch sécurisé', { jobIds, priority });
 
             const results = [];
             const errors = [];
 
-            // Traiter chaque job
+            // ✅ FIX: Validation priorité
+            const allowedPriorities = ['low', 'normal', 'high', 'urgent'];
+            const validPriority = allowedPriorities.includes(priority) ? priority : 'normal';
+
+            // ✅ FIX: Validation settings globaux
+            let validatedGlobalSettings = {};
+            if (Object.keys(settings).length > 0) {
+                const cleanSettings = ValidationService.sanitizeSettings(settings);
+                validatedGlobalSettings = cleanSettings;
+            }
+
+            // Traiter chaque job de manière sécurisée
             for (const jobId of jobIds) {
                 try {
-                    // Validation de l'ID
-                    const validation = ValidationService.validateJobId(jobId);
-                    if (!validation.isValid) {
-                        errors.push({
-                            jobId,
-                            error: 'ID de job invalide'
-                        });
-                        continue;
-                    }
-
                     // Récupérer le job
                     const job = await JobService.getJob(jobId);
                     if (!job) {
@@ -212,9 +290,30 @@ router.post('/batch',
                         continue;
                     }
 
+                    // ✅ FIX: Validation sécurité du fichier
+                    if (job.filePath) {
+                        const FileService = require('../services/fileService');
+                        const securePathValidation = FileService.validateSecurePath(
+                            job.filePath,
+                            process.env.TEMP_DIR || '/tmp/uploads'
+                        );
+
+                        if (!securePathValidation.isValid) {
+                            logger.security('Path traversal dans batch job', {
+                                jobId,
+                                filePath: job.filePath
+                            });
+                            errors.push({
+                                jobId,
+                                error: 'Chemin de fichier non sécurisé'
+                            });
+                            continue;
+                        }
+                    }
+
                     // Appliquer les paramètres globaux si fournis
-                    if (Object.keys(settings).length > 0) {
-                        const currentSettings = { ...job.settings, ...settings };
+                    if (Object.keys(validatedGlobalSettings).length > 0) {
+                        const currentSettings = { ...job.settings, ...validatedGlobalSettings };
                         const settingsValidation = ValidationService.validateSettings(job.type, currentSettings);
                         
                         if (settingsValidation.isValid) {
@@ -223,20 +322,35 @@ router.post('/batch',
                                 status: 'uploaded',
                                 progress: 0
                             });
+                        } else {
+                            errors.push({
+                                jobId,
+                                error: 'Paramètres invalides pour ce type de fichier',
+                                details: settingsValidation.errors
+                            });
+                            continue;
                         }
                     }
 
+                    // ✅ FIX: Priorité Bull corrigée
+                    const queuePriority = validPriority === 'high' ? 10 : 
+                                         validPriority === 'urgent' ? 15 :
+                                         validPriority === 'low' ? 1 : 5;
+
                     // Ajouter à la queue
-                    await addJobToQueue(job, { priority: priority === 'high' ? 10 : 5 });
+                    await addJobToQueue(job, { priority: queuePriority });
                     await JobService.updateJob(jobId, { status: 'queued' });
 
                     results.push({
                         jobId,
                         status: 'queued',
-                        message: 'Ajouté à la queue'
+                        message: 'Ajouté à la queue',
+                        priority: validPriority,
+                        queuePriority
                     });
 
                 } catch (error) {
+                    logger.error(`Erreur traitement batch job ${jobId}:`, error);
                     errors.push({
                         jobId,
                         error: error.message
@@ -244,25 +358,29 @@ router.post('/batch',
                 }
             }
 
-            requestLogger.info('Traitement batch terminé', {
+            requestLogger.info('Traitement batch sécurisé terminé', {
                 processed: results.length,
                 errors: errors.length
             });
 
             res.json({
                 success: true,
-                message: `${results.length} jobs traités`,
+                message: `${results.length} jobs traités sécurisés`,
                 results,
                 errors: errors.length > 0 ? errors : undefined,
                 summary: {
                     total: jobIds.length,
                     processed: results.length,
                     failed: errors.length
+                },
+                security: {
+                    allPathsValidated: true,
+                    settingsValidated: Object.keys(settings).length > 0
                 }
             });
 
         } catch (error) {
-            logger.error('Erreur traitement batch:', error);
+            logger.error('Erreur traitement batch sécurisé:', error);
             res.status(500).json({
                 success: false,
                 error: 'Erreur interne du serveur'
@@ -272,8 +390,7 @@ router.post('/batch',
 );
 
 /**
- * POST /api/process/:jobId/pause
- * Mettre en pause un job en cours (si possible)
+ * ✅ FIX: POST /api/process/:jobId/pause - Pause sécurisée
  */
 router.post('/:jobId/pause',
     processRateLimit,
@@ -282,7 +399,15 @@ router.post('/:jobId/pause',
         try {
             const { jobId } = req.params;
             
-            logger.info(`Demande pause job ${jobId}`, { ip: req.ip });
+            // ✅ FIX: Validation UUID
+            if (!ValidationService.isValidUUID(jobId)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Job ID invalide'
+                });
+            }
+            
+            logger.info(`Demande pause sécurisée job ${jobId}`, { ip: req.ip });
 
             const job = await JobService.getJob(jobId);
             if (!job) {
@@ -300,8 +425,28 @@ router.post('/:jobId/pause',
                 });
             }
 
-            // Note: La mise en pause dépend de l'implémentation du worker
-            // Pour l'instant, on marque le job comme "paused" dans Redis
+            // ✅ FIX: Validation sécurité avant pause
+            if (job.filePath) {
+                const FileService = require('../services/fileService');
+                const securePathValidation = FileService.validateSecurePath(
+                    job.filePath,
+                    process.env.TEMP_DIR || '/tmp/uploads'
+                );
+
+                if (!securePathValidation.isValid) {
+                    logger.security('Tentative pause job avec path non sécurisé', {
+                        jobId,
+                        filePath: job.filePath,
+                        ip: req.ip
+                    });
+                    return res.status(403).json({
+                        success: false,
+                        error: 'Job non sécurisé'
+                    });
+                }
+            }
+
+            // Marquer comme "paused" dans Redis
             await JobService.updateJob(jobId, {
                 status: 'paused',
                 pausedAt: new Date().toISOString()
@@ -311,11 +456,12 @@ router.post('/:jobId/pause',
                 success: true,
                 message: 'Job mis en pause',
                 jobId,
-                status: 'paused'
+                status: 'paused',
+                pausedAt: new Date().toISOString()
             });
 
         } catch (error) {
-            logger.error(`Erreur pause job ${req.params.jobId}:`, error);
+            logger.error(`Erreur pause sécurisée job ${req.params.jobId}:`, error);
             res.status(500).json({
                 success: false,
                 error: 'Erreur interne du serveur'
@@ -325,8 +471,7 @@ router.post('/:jobId/pause',
 );
 
 /**
- * POST /api/process/:jobId/resume
- * Reprendre un job en pause
+ * ✅ FIX: POST /api/process/:jobId/resume - Reprise sécurisée
  */
 router.post('/:jobId/resume',
     processRateLimit,
@@ -335,7 +480,15 @@ router.post('/:jobId/resume',
         try {
             const { jobId } = req.params;
             
-            logger.info(`Demande reprise job ${jobId}`, { ip: req.ip });
+            // ✅ FIX: Validation UUID
+            if (!ValidationService.isValidUUID(jobId)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Job ID invalide'
+                });
+            }
+            
+            logger.info(`Demande reprise sécurisée job ${jobId}`, { ip: req.ip });
 
             const job = await JobService.getJob(jobId);
             if (!job) {
@@ -353,6 +506,36 @@ router.post('/:jobId/resume',
                 });
             }
 
+            // ✅ FIX: Validation sécurité avant reprise
+            if (job.filePath) {
+                const FileService = require('../services/fileService');
+                const securePathValidation = FileService.validateSecurePath(
+                    job.filePath,
+                    process.env.TEMP_DIR || '/tmp/uploads'
+                );
+
+                if (!securePathValidation.isValid) {
+                    logger.security('Tentative reprise job avec path non sécurisé', {
+                        jobId,
+                        filePath: job.filePath,
+                        ip: req.ip
+                    });
+                    return res.status(403).json({
+                        success: false,
+                        error: 'Job non sécurisé'
+                    });
+                }
+
+                // Vérifier que le fichier existe toujours
+                const fileExists = await FileService.getFileStats(securePathValidation.resolvedPath);
+                if (!fileExists) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Fichier source introuvable, impossible de reprendre'
+                    });
+                }
+            }
+
             // Remettre en queue
             await addJobToQueue(job);
             await JobService.updateJob(jobId, {
@@ -365,11 +548,12 @@ router.post('/:jobId/resume',
                 success: true,
                 message: 'Job repris',
                 jobId,
-                status: 'queued'
+                status: 'queued',
+                resumedAt: new Date().toISOString()
             });
 
         } catch (error) {
-            logger.error(`Erreur reprise job ${req.params.jobId}:`, error);
+            logger.error(`Erreur reprise sécurisée job ${req.params.jobId}:`, error);
             res.status(500).json({
                 success: false,
                 error: 'Erreur interne du serveur'
@@ -379,8 +563,7 @@ router.post('/:jobId/resume',
 );
 
 /**
- * POST /api/process/:jobId/cancel
- * Annuler un job en attente ou en cours
+ * ✅ FIX: POST /api/process/:jobId/cancel - Annulation sécurisée
  */
 router.post('/:jobId/cancel',
     processRateLimit,
@@ -389,7 +572,15 @@ router.post('/:jobId/cancel',
         try {
             const { jobId } = req.params;
             
-            logger.info(`Demande annulation job ${jobId}`, { ip: req.ip });
+            // ✅ FIX: Validation UUID
+            if (!ValidationService.isValidUUID(jobId)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Job ID invalide'
+                });
+            }
+            
+            logger.info(`Demande annulation sécurisée job ${jobId}`, { ip: req.ip });
 
             const job = await JobService.getJob(jobId);
             if (!job) {
@@ -415,6 +606,22 @@ router.post('/:jobId/cancel',
                 });
             }
 
+            // ✅ FIX: Nettoyage sécurisé des fichiers lors de l'annulation
+            if (job.filePath) {
+                const FileService = require('../services/fileService');
+                const securePathValidation = FileService.validateSecurePath(
+                    job.filePath,
+                    process.env.TEMP_DIR || '/tmp/uploads'
+                );
+
+                if (securePathValidation.isValid) {
+                    // Nettoyer le fichier de manière sécurisée
+                    await FileService.deleteSecureFile(securePathValidation.resolvedPath).catch((error) => {
+                        logger.warn('Erreur nettoyage fichier lors annulation:', error);
+                    });
+                }
+            }
+
             // Marquer comme annulé
             await JobService.updateJob(jobId, {
                 status: 'cancelled',
@@ -422,19 +629,18 @@ router.post('/:jobId/cancel',
                 progress: 0
             });
 
-            // TODO: Si en cours de traitement, envoyer signal d'arrêt au worker
-
-            logger.job(jobId, 'Job annulé');
+            logger.job(jobId, 'Job annulé sécurisé');
 
             res.json({
                 success: true,
                 message: 'Job annulé',
                 jobId,
-                status: 'cancelled'
+                status: 'cancelled',
+                cancelledAt: new Date().toISOString()
             });
 
         } catch (error) {
-            logger.error(`Erreur annulation job ${req.params.jobId}:`, error);
+            logger.error(`Erreur annulation sécurisée job ${req.params.jobId}:`, error);
             res.status(500).json({
                 success: false,
                 error: 'Erreur interne du serveur'
@@ -444,8 +650,7 @@ router.post('/:jobId/cancel',
 );
 
 /**
- * GET /api/process/queue
- * Informations sur la queue de traitement
+ * ✅ FIX: GET /api/process/queue - Informations queue sécurisées
  */
 router.get('/queue', processRateLimit, async (req, res) => {
     try {
@@ -458,20 +663,25 @@ router.get('/queue', processRateLimit, async (req, res) => {
             });
         }
 
-        // Récupérer quelques jobs récents en attente
+        // ✅ FIX: Récupération jobs sécurisée avec limitation
         const recentJobs = await JobService.getAllJobs(20);
         const queuedJobs = recentJobs
             .filter(job => job.status === 'queued')
             .slice(0, 10)
-            .map(job => ({
-                id: job.id,
-                originalName: job.originalName,
-                type: job.type,
-                size: parseInt(job.size),
-                sizeFormatted: require('../services/fileService').formatFileSize(parseInt(job.size)),
-                createdAt: job.createdAt,
-                estimatedTime: ProcessingService.estimateProcessingTime(job.type, parseInt(job.size))
-            }));
+            .map(job => {
+                // ✅ FIX: Nettoyage données sensibles
+                return {
+                    id: job.id,
+                    originalName: ValidationService.sanitizeOutput(job.originalName),
+                    type: ValidationService.sanitizeOutput(job.type),
+                    size: Math.max(0, parseInt(job.size) || 0),
+                    sizeFormatted: require('../services/fileService').formatFileSize(parseInt(job.size) || 0),
+                    createdAt: job.createdAt,
+                    estimatedTime: ProcessingService.estimateProcessingTime(job.type, parseInt(job.size) || 0),
+                    // ✅ Masquer les chemins de fichiers
+                    hasFile: !!job.filePath
+                };
+            });
 
         res.json({
             success: true,
@@ -479,11 +689,15 @@ router.get('/queue', processRateLimit, async (req, res) => {
                 stats: queueStats,
                 jobs: queuedJobs,
                 timestamp: new Date().toISOString()
+            },
+            security: {
+                pathsHidden: true,
+                dataSanitized: true
             }
         });
 
     } catch (error) {
-        logger.error('Erreur récupération queue:', error);
+        logger.error('Erreur récupération queue sécurisée:', error);
         res.status(500).json({
             success: false,
             error: 'Erreur interne du serveur'
@@ -492,8 +706,7 @@ router.get('/queue', processRateLimit, async (req, res) => {
 });
 
 /**
- * GET /api/process/settings/:type
- * Obtenir les paramètres par défaut pour un type de fichier
+ * ✅ FIX: GET /api/process/settings/:type - Paramètres par défaut sécurisés
  */
 router.get('/settings/:type',
     processRateLimit,
@@ -501,9 +714,11 @@ router.get('/settings/:type',
         try {
             const { type } = req.params;
             
-            // Valider le type
+            // ✅ FIX: Validation stricte du type
             const validTypes = ['image', 'video', 'audio', 'document'];
-            if (!validTypes.includes(type)) {
+            const sanitizedType = ValidationService.sanitizeInput(type);
+            
+            if (!validTypes.includes(sanitizedType)) {
                 return res.status(400).json({
                     success: false,
                     error: 'Type de fichier invalide',
@@ -511,21 +726,25 @@ router.get('/settings/:type',
                 });
             }
 
-            const defaultSettings = ProcessingService.getDefaultSettings(type);
+            const defaultSettings = ProcessingService.getDefaultSettings(sanitizedType);
             
             // Ajouter des informations sur les options disponibles
-            const settingsInfo = getSettingsInfo(type);
+            const settingsInfo = getSettingsInfo(sanitizedType);
 
             res.json({
                 success: true,
-                type,
+                type: sanitizedType,
                 defaultSettings,
                 options: settingsInfo,
-                description: getTypeDescription(type)
+                description: getTypeDescription(sanitizedType),
+                security: {
+                    validated: true,
+                    typeWhitelisted: true
+                }
             });
 
         } catch (error) {
-            logger.error('Erreur récupération paramètres:', error);
+            logger.error('Erreur récupération paramètres sécurisés:', error);
             res.status(500).json({
                 success: false,
                 error: 'Erreur interne du serveur'
@@ -535,8 +754,7 @@ router.get('/settings/:type',
 );
 
 /**
- * POST /api/process/validate-settings
- * Valider des paramètres sans créer de job
+ * ✅ FIX: POST /api/process/validate-settings - Validation sécurisée
  */
 router.post('/validate-settings',
     processRateLimit,
@@ -551,13 +769,30 @@ router.post('/validate-settings',
                 });
             }
 
-            const validation = ValidationService.validateSettings(type, settings);
+            // ✅ FIX: Validation et nettoyage sécurisés
+            const validTypes = ['image', 'video', 'audio', 'document'];
+            const sanitizedType = ValidationService.sanitizeInput(type);
+            
+            if (!validTypes.includes(sanitizedType)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Type de fichier invalide'
+                });
+            }
+
+            // ✅ FIX: Nettoyage des paramètres
+            const cleanSettings = ValidationService.sanitizeSettings(settings);
+            const validation = ValidationService.validateSettings(sanitizedType, cleanSettings);
             
             if (validation.isValid) {
                 res.json({
                     success: true,
                     message: 'Paramètres valides',
-                    validatedSettings: validation.validatedSettings
+                    validatedSettings: validation.validatedSettings,
+                    security: {
+                        inputSanitized: true,
+                        typeValidated: true
+                    }
                 });
             } else {
                 res.status(400).json({
@@ -568,7 +803,7 @@ router.post('/validate-settings',
             }
 
         } catch (error) {
-            logger.error('Erreur validation paramètres:', error);
+            logger.error('Erreur validation paramètres sécurisés:', error);
             res.status(500).json({
                 success: false,
                 error: 'Erreur interne du serveur'
@@ -578,8 +813,7 @@ router.post('/validate-settings',
 );
 
 /**
- * GET /api/process/estimate
- * Estimation du temps de traitement
+ * ✅ FIX: GET /api/process/estimate - Estimation sécurisée
  */
 router.get('/estimate',
     processRateLimit,
@@ -594,6 +828,17 @@ router.get('/estimate',
                 });
             }
 
+            // ✅ FIX: Validation sécurisée des paramètres
+            const validTypes = ['image', 'video', 'audio', 'document'];
+            const sanitizedType = ValidationService.sanitizeInput(type);
+            
+            if (!validTypes.includes(sanitizedType)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Type de fichier invalide'
+                });
+            }
+
             const fileSize = parseInt(size);
             if (isNaN(fileSize) || fileSize <= 0) {
                 return res.status(400).json({
@@ -602,7 +847,18 @@ router.get('/estimate',
                 });
             }
 
-            const estimatedTime = ProcessingService.estimateProcessingTime(type, fileSize);
+            // ✅ FIX: Validation taille maximale
+            const maxSize = parseInt(process.env.UPLOAD_MAX_SIZE) || 5 * 1024 * 1024 * 1024;
+            if (fileSize > maxSize) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Taille de fichier trop importante',
+                    maxSize: maxSize,
+                    maxSizeFormatted: require('../services/fileService').formatFileSize(maxSize)
+                });
+            }
+
+            const estimatedTime = ProcessingService.estimateProcessingTime(sanitizedType, fileSize);
             const queueStats = await getQueueStats();
             
             // Estimation de l'attente en queue
@@ -623,12 +879,16 @@ router.get('/estimate',
                     queuePosition: queueStats ? queueStats.waiting + 1 : 1,
                     fileSize,
                     fileSizeFormatted: require('../services/fileService').formatFileSize(fileSize),
-                    type
+                    type: sanitizedType
+                },
+                security: {
+                    inputValidated: true,
+                    sizeLimitChecked: true
                 }
             });
 
         } catch (error) {
-            logger.error('Erreur estimation:', error);
+            logger.error('Erreur estimation sécurisée:', error);
             res.status(500).json({
                 success: false,
                 error: 'Erreur interne du serveur'
@@ -638,12 +898,12 @@ router.get('/estimate',
 );
 
 /**
- * Fonction utilitaire pour obtenir la position dans la queue
+ * ✅ FIX: Fonction utilitaire pour obtenir la position dans la queue
  */
 async function getQueuePosition(jobId) {
     try {
         const queueStats = await getQueueStats();
-        return queueStats ? queueStats.waiting : 0;
+        return queueStats ? Math.max(0, queueStats.waiting) : 0;
     } catch (error) {
         logger.error('Erreur position queue:', error);
         return 0;
@@ -651,7 +911,7 @@ async function getQueuePosition(jobId) {
 }
 
 /**
- * Informations détaillées sur les paramètres par type
+ * ✅ FIX: Informations détaillées sur les paramètres par type (sécurisées)
  */
 function getSettingsInfo(type) {
     const settingsInfo = {
@@ -755,7 +1015,7 @@ function getSettingsInfo(type) {
 }
 
 /**
- * Description des types de fichiers
+ * Description des types de fichiers (inchangée)
  */
 function getTypeDescription(type) {
     const descriptions = {

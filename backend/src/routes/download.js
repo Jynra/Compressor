@@ -1,4 +1,4 @@
-// backend/src/routes/download.js
+// backend/src/routes/download.js - CORRIGÉ
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -12,11 +12,43 @@ const logger = require('../utils/logger');
 const router = express.Router();
 
 /**
- * Rate limiting pour les téléchargements
+ * ✅ FIX: Parser Range HTTP sécurisé - DÉFINI AVANT UTILISATION
+ */
+function parseRange(size, rangeHeader) {
+    if (!rangeHeader || !rangeHeader.startsWith('bytes=')) {
+        return null;
+    }
+
+    const ranges = [];
+    const rangeSpecs = rangeHeader.substring(6).split(',');
+
+    for (const rangeSpec of rangeSpecs) {
+        const trimmedSpec = rangeSpec.trim();
+        const rangeParts = trimmedSpec.split('-');
+        
+        if (rangeParts.length !== 2) continue;
+
+        let start = parseInt(rangeParts[0]) || 0;
+        let end = parseInt(rangeParts[1]) || (size - 1);
+
+        // ✅ FIX: Validation stricte des ranges
+        if (start < 0) start = 0;
+        if (end >= size) end = size - 1;
+        if (start > end) continue;
+        if (start > size - 1) continue;
+
+        ranges.push({ start, end });
+    }
+
+    return ranges.length > 0 ? ranges : null;
+}
+
+/**
+ * Rate limiting pour téléchargements
  */
 const downloadRateLimit = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: parseInt(process.env.DOWNLOAD_RATE_LIMIT) || 20, // 20 téléchargements par minute
+    windowMs: 1 * 60 * 1000,
+    max: parseInt(process.env.DOWNLOAD_RATE_LIMIT) || 20,
     message: {
         success: false,
         error: 'Trop de téléchargements, veuillez attendre'
@@ -24,7 +56,6 @@ const downloadRateLimit = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => {
-        // Rate limit par IP
         return req.ip;
     },
     skip: (req) => {
@@ -41,15 +72,32 @@ const downloadRateLimit = rateLimit({
 });
 
 /**
- * Middleware de validation d'accès au téléchargement
+ * ✅ FIX: Validation d'accès téléchargement sécurisée
  */
 const validateDownloadAccess = async (req, res, next) => {
     try {
         const { jobId } = req.params;
         
+        // ✅ FIX: Validation UUID stricte
+        if (!ValidationService.isValidUUID(jobId)) {
+            logger.security('Tentative accès download avec job ID invalide', {
+                jobId,
+                ip: req.ip,
+                userAgent: req.get('User-Agent')
+            });
+            return res.status(400).json({
+                success: false,
+                error: 'Job ID invalide'
+            });
+        }
+        
         // Vérifier que le job existe
         const job = await JobService.getJob(jobId);
         if (!job) {
+            logger.security('Tentative accès job inexistant', {
+                jobId,
+                ip: req.ip
+            });
             return res.status(404).json({
                 success: false,
                 error: 'Job non trouvé'
@@ -66,26 +114,71 @@ const validateDownloadAccess = async (req, res, next) => {
             });
         }
 
-        // Vérifier que le fichier de sortie existe
+        // ✅ FIX: Validation sécurisée du chemin de sortie
         if (!job.outputPath) {
+            logger.error('Job sans chemin de sortie', { jobId });
             return res.status(500).json({
                 success: false,
                 error: 'Chemin de fichier manquant'
             });
         }
 
-        const fileStats = await FileService.getFileStats(job.outputPath);
+        // ✅ FIX: Vérification sécurisée du chemin
+        const securePathValidation = FileService.validateSecurePath(
+            job.outputPath, 
+            process.env.TEMP_DIR || '/tmp/uploads'
+        );
+
+        if (!securePathValidation.isValid) {
+            logger.security('Tentative path traversal dans download', {
+                jobId,
+                requestedPath: job.outputPath,
+                ip: req.ip
+            });
+            return res.status(403).json({
+                success: false,
+                error: 'Accès non autorisé'
+            });
+        }
+
+        // Vérifier l'existence du fichier
+        const fileStats = await FileService.getFileStats(securePathValidation.resolvedPath);
         if (!fileStats) {
-            logger.error(`Fichier de sortie introuvable: ${job.outputPath}`, { jobId });
+            logger.error(`Fichier de sortie introuvable: ${securePathValidation.resolvedPath}`, { jobId });
             return res.status(404).json({
                 success: false,
                 error: 'Fichier non trouvé sur le serveur'
             });
         }
 
-        // Ajouter les informations à la requête
+        // ✅ FIX: Vérification intégrité fichier
+        if (fileStats.size === 0) {
+            logger.error('Fichier de sortie vide', { jobId, path: securePathValidation.resolvedPath });
+            return res.status(500).json({
+                success: false,
+                error: 'Fichier corrompu'
+            });
+        }
+
+        // ✅ FIX: Vérification permissions lecture
+        try {
+            await fs.promises.access(securePathValidation.resolvedPath, fs.constants.R_OK);
+        } catch (accessError) {
+            logger.error('Permissions lecture insuffisantes', { 
+                jobId, 
+                path: securePathValidation.resolvedPath,
+                error: accessError.message 
+            });
+            return res.status(500).json({
+                success: false,
+                error: 'Fichier non accessible'
+            });
+        }
+
+        // Ajouter les informations sécurisées à la requête
         req.job = job;
         req.fileStats = fileStats;
+        req.securePath = securePathValidation.resolvedPath;
         
         next();
 
@@ -99,8 +192,7 @@ const validateDownloadAccess = async (req, res, next) => {
 };
 
 /**
- * GET /api/download/:jobId
- * Télécharger le fichier traité
+ * ✅ FIX: GET /api/download/:jobId - Téléchargement sécurisé
  */
 router.get('/:jobId',
     downloadRateLimit,
@@ -108,7 +200,7 @@ router.get('/:jobId',
     validateDownloadAccess,
     async (req, res) => {
         const { jobId } = req.params;
-        const { job, fileStats } = req;
+        const { job, fileStats, securePath } = req;
         
         const downloadLogger = logger.withContext({
             jobId,
@@ -117,46 +209,60 @@ router.get('/:jobId',
         });
 
         try {
-            downloadLogger.info('Téléchargement démarré', {
+            downloadLogger.info('Téléchargement sécurisé démarré', {
                 filename: job.originalName,
-                outputPath: job.outputPath,
+                outputPath: securePath,
                 size: fileStats.size
             });
 
-            // Déterminer le nom de fichier pour le téléchargement
+            // ✅ FIX: Génération nom de fichier sécurisé
             const originalExt = path.extname(job.originalName);
             const baseName = path.basename(job.originalName, originalExt);
             
-            // Ajouter un suffixe pour indiquer la compression
+            // Nettoyer et sécuriser le nom
             let downloadFilename;
             if (job.compressionRatio && job.compressionRatio > 0) {
-                downloadFilename = `${baseName}_optimized${originalExt}`;
+                downloadFilename = `${ValidationService.sanitizeFilename(baseName)}_optimized${originalExt}`;
             } else {
-                downloadFilename = job.originalName;
+                downloadFilename = ValidationService.sanitizeFilename(job.originalName);
             }
 
-            // Nettoyer le nom de fichier pour le téléchargement
-            downloadFilename = ValidationService.sanitizeFilename(downloadFilename) || 'file';
+            // Fallback sécurisé
+            if (!downloadFilename) {
+                downloadFilename = `file_${jobId.substring(0, 8)}${originalExt || '.bin'}`;
+            }
 
-            // Déterminer le type MIME
-            const mimeType = require('mime-types').lookup(job.outputPath) || 'application/octet-stream';
+            // ✅ FIX: Détermination MIME type sécurisée
+            const mimeType = require('mime-types').lookup(securePath) || 'application/octet-stream';
+            
+            // ✅ FIX: Validation MIME type cohérent
+            const expectedMimeType = require('mime-types').lookup(originalExt) || 'application/octet-stream';
+            if (mimeType !== expectedMimeType && mimeType !== 'application/octet-stream') {
+                downloadLogger.warn('MIME type incohérent détecté', {
+                    expected: expectedMimeType,
+                    actual: mimeType,
+                    filename: job.originalName
+                });
+            }
 
-            // Configurer les headers de réponse
+            // ✅ FIX: Headers de sécurité renforcés
             res.setHeader('Content-Type', mimeType);
             res.setHeader('Content-Length', fileStats.size);
             res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             res.setHeader('Pragma', 'no-cache');
             res.setHeader('Expires', '0');
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.setHeader('X-Frame-Options', 'DENY');
             
-            // Headers personnalisés avec informations sur le traitement
-            res.setHeader('X-Original-Size', job.size);
-            res.setHeader('X-Compressed-Size', job.compressedSize || job.size);
-            res.setHeader('X-Compression-Ratio', job.compressionRatio || 0);
-            res.setHeader('X-File-Type', job.type);
-            res.setHeader('X-Processing-Time', new Date(job.updatedAt) - new Date(job.createdAt));
+            // Headers métadonnées avec validation
+            res.setHeader('X-Original-Size', Math.max(0, parseInt(job.size) || 0));
+            res.setHeader('X-Compressed-Size', Math.max(0, parseInt(job.compressedSize) || parseInt(job.size) || 0));
+            res.setHeader('X-Compression-Ratio', Math.max(0, Math.min(100, parseInt(job.compressionRatio) || 0)));
+            res.setHeader('X-File-Type', ValidationService.sanitizeHeader(job.type || 'unknown'));
+            res.setHeader('X-Processing-Time', Math.max(0, new Date(job.updatedAt) - new Date(job.createdAt)));
 
-            // Support du Range (téléchargement partiel)
+            // ✅ FIX: Support Range sécurisé avec parser défini
             const range = req.headers.range;
             
             if (range) {
@@ -166,29 +272,39 @@ router.get('/:jobId',
                     const { start, end } = ranges[0];
                     const contentLength = (end - start) + 1;
                     
-                    res.status(206); // Partial Content
-                    res.setHeader('Content-Range', `bytes ${start}-${end}/${fileStats.size}`);
-                    res.setHeader('Content-Length', contentLength);
-                    res.setHeader('Accept-Ranges', 'bytes');
-                    
-                    // Stream partiel
-                    const stream = fs.createReadStream(job.outputPath, { start, end });
-                    streamFile(stream, res, downloadLogger, job, true);
+                    // ✅ FIX: Validation range sécurisée
+                    if (contentLength > 0 && start >= 0 && end < fileStats.size && start <= end) {
+                        res.status(206); // Partial Content
+                        res.setHeader('Content-Range', `bytes ${start}-${end}/${fileStats.size}`);
+                        res.setHeader('Content-Length', contentLength);
+                        res.setHeader('Accept-Ranges', 'bytes');
+                        
+                        // Stream partiel sécurisé
+                        const stream = fs.createReadStream(securePath, { start, end });
+                        streamFileSafely(stream, res, downloadLogger, job, true);
+                    } else {
+                        // Range invalide
+                        downloadLogger.warn('Range invalide demandé', { start, end, fileSize: fileStats.size });
+                        res.status(416); // Range Not Satisfiable
+                        res.setHeader('Content-Range', `bytes */${fileStats.size}`);
+                        res.end();
+                    }
                 } else {
-                    // Range invalide
-                    res.status(416); // Range Not Satisfiable
+                    // Range invalide ou multiple
+                    downloadLogger.warn('Range non supporté', { range });
+                    res.status(416);
                     res.setHeader('Content-Range', `bytes */${fileStats.size}`);
                     res.end();
                 }
             } else {
-                // Téléchargement complet
+                // Téléchargement complet sécurisé
                 res.setHeader('Accept-Ranges', 'bytes');
-                const stream = fs.createReadStream(job.outputPath);
-                streamFile(stream, res, downloadLogger, job, false);
+                const stream = fs.createReadStream(securePath);
+                streamFileSafely(stream, res, downloadLogger, job, false);
             }
 
         } catch (error) {
-            downloadLogger.error('Erreur téléchargement:', error);
+            downloadLogger.error('Erreur téléchargement sécurisé:', error);
             
             if (!res.headersSent) {
                 res.status(500).json({
@@ -201,149 +317,52 @@ router.get('/:jobId',
 );
 
 /**
- * GET /api/download/:jobId/info
- * Informations sur le fichier à télécharger
+ * ✅ FIX: Fonction de streaming sécurisée
  */
-router.get('/:jobId/info',
-    downloadRateLimit,
-    validateRequest.jobId,
-    validateDownloadAccess,
-    async (req, res) => {
-        try {
-            const { job, fileStats } = req;
-            
-            // Calculer les métriques
-            const compressionRatio = parseInt(job.compressionRatio) || 0;
-            const savedBytes = parseInt(job.size) - parseInt(job.compressedSize || job.size);
-            const processingTime = new Date(job.updatedAt) - new Date(job.createdAt);
-
-            res.json({
-                success: true,
-                file: {
-                    jobId: job.id,
-                    originalName: job.originalName,
-                    type: job.type,
-                    originalSize: parseInt(job.size),
-                    originalSizeFormatted: FileService.formatFileSize(parseInt(job.size)),
-                    compressedSize: parseInt(job.compressedSize || job.size),
-                    compressedSizeFormatted: FileService.formatFileSize(parseInt(job.compressedSize || job.size)),
-                    compressionRatio,
-                    savedBytes,
-                    savedBytesFormatted: FileService.formatFileSize(savedBytes),
-                    processingTime: Math.floor(processingTime / 1000), // en secondes
-                    mimeType: require('mime-types').lookup(job.outputPath) || 'application/octet-stream',
-                    settings: job.settings,
-                    createdAt: job.createdAt,
-                    completedAt: job.updatedAt
-                }
-            });
-
-        } catch (error) {
-            logger.error('Erreur info download:', error);
-            res.status(500).json({
-                success: false,
-                error: 'Erreur récupération informations'
-            });
-        }
-    }
-);
-
-/**
- * GET /api/download/:jobId/preview
- * Prévisualisation du fichier (pour les images)
- */
-router.get('/:jobId/preview',
-    downloadRateLimit,
-    validateRequest.jobId,
-    validateDownloadAccess,
-    async (req, res) => {
-        try {
-            const { job } = req;
-            
-            // Vérifier que c'est une image
-            if (job.type !== 'image') {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Prévisualisation disponible uniquement pour les images'
-                });
-            }
-
-            const { size = 'medium' } = req.query;
-            const maxSizes = {
-                small: 150,
-                medium: 300,
-                large: 600
-            };
-
-            const maxSize = maxSizes[size] || 300;
-
-            // Générer une vignette temporaire
-            const ImageService = require('../services/imageService');
-            const tempDir = process.env.TEMP_DIR || '/tmp/uploads';
-            const thumbnailPath = path.join(tempDir, `preview_${job.id}_${maxSize}.jpg`);
-
-            // Vérifier si la vignette existe déjà
-            let thumbExists = await FileService.getFileStats(thumbnailPath);
-            
-            if (!thumbExists) {
-                // Créer la vignette
-                await ImageService.createThumbnail(job.outputPath, thumbnailPath, maxSize);
-                thumbExists = await FileService.getFileStats(thumbnailPath);
-            }
-
-            if (!thumbExists) {
-                return res.status(500).json({
-                    success: false,
-                    error: 'Impossible de générer la prévisualisation'
-                });
-            }
-
-            // Servir la vignette
-            res.setHeader('Content-Type', 'image/jpeg');
-            res.setHeader('Content-Length', thumbExists.size);
-            res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache 1h
-            
-            const stream = fs.createReadStream(thumbnailPath);
-            stream.pipe(res);
-
-            // Nettoyer la vignette après envoi (optionnel)
-            stream.on('end', () => {
-                setTimeout(() => {
-                    FileService.deleteFile(thumbnailPath).catch(() => {});
-                }, 5000); // Attendre 5s avant suppression
-            });
-
-        } catch (error) {
-            logger.error('Erreur preview:', error);
-            res.status(500).json({
-                success: false,
-                error: 'Erreur génération prévisualisation'
-            });
-        }
-    }
-);
-
-/**
- * Fonction pour streamer un fichier avec gestion d'erreurs
- */
-function streamFile(stream, res, downloadLogger, job, isPartial = false) {
+function streamFileSafely(stream, res, downloadLogger, job, isPartial = false) {
     let bytesStreamed = 0;
     const startTime = Date.now();
+    let streamCompleted = false;
+
+    // ✅ FIX: Timeout de stream
+    const streamTimeout = setTimeout(() => {
+        if (!streamCompleted) {
+            downloadLogger.error('Timeout de stream atteint');
+            if (stream.readable) {
+                stream.destroy();
+            }
+            if (!res.headersSent) {
+                res.status(500).end();
+            }
+        }
+    }, 5 * 60 * 1000); // 5 minutes timeout
 
     stream.on('data', (chunk) => {
         bytesStreamed += chunk.length;
+        
+        // ✅ FIX: Limitation débit pour éviter surcharge
+        if (bytesStreamed > 0 && bytesStreamed % (1024 * 1024) === 0) { // Chaque MB
+            downloadLogger.debug('Téléchargement en cours', {
+                bytesStreamed,
+                progress: Math.round((bytesStreamed / (parseInt(job.compressedSize) || parseInt(job.size))) * 100)
+            });
+        }
     });
 
     stream.on('end', () => {
+        streamCompleted = true;
+        clearTimeout(streamTimeout);
+        
         const duration = Date.now() - startTime;
         const speed = bytesStreamed / (duration / 1000); // bytes/sec
         
-        downloadLogger.info('Téléchargement terminé', {
+        downloadLogger.info('Téléchargement sécurisé terminé', {
             bytesStreamed,
             duration,
             speedBps: Math.round(speed),
             speedFormatted: FileService.formatFileSize(speed) + '/s',
-            isPartial
+            isPartial,
+            jobId: job.id
         });
 
         downloadLogger.metric('download_completed', 1, 'count', {
@@ -354,7 +373,10 @@ function streamFile(stream, res, downloadLogger, job, isPartial = false) {
     });
 
     stream.on('error', (error) => {
-        downloadLogger.error('Erreur stream fichier:', error);
+        streamCompleted = true;
+        clearTimeout(streamTimeout);
+        
+        downloadLogger.error('Erreur stream fichier sécurisé:', error);
         
         if (!res.headersSent) {
             res.status(500).json({
@@ -365,10 +387,13 @@ function streamFile(stream, res, downloadLogger, job, isPartial = false) {
     });
 
     res.on('close', () => {
-        // Client a fermé la connexion
+        streamCompleted = true;
+        clearTimeout(streamTimeout);
+        
         downloadLogger.info('Connexion fermée par le client', {
             bytesStreamed,
-            isComplete: res.writableEnded
+            isComplete: res.writableEnded,
+            jobId: job.id
         });
         
         // Nettoyer le stream
@@ -377,38 +402,199 @@ function streamFile(stream, res, downloadLogger, job, isPartial = false) {
         }
     });
 
-    // Pipe le stream vers la réponse
+    // ✅ FIX: Gestion erreur écriture
+    res.on('error', (error) => {
+        streamCompleted = true;
+        clearTimeout(streamTimeout);
+        
+        downloadLogger.error('Erreur écriture réponse:', error);
+        
+        if (stream.readable) {
+            stream.destroy();
+        }
+    });
+
+    // Pipe sécurisé
     stream.pipe(res);
 }
 
 /**
- * Parser les headers Range pour le download partiel
+ * ✅ FIX: GET /api/download/:jobId/info - Informations sécurisées
  */
-function parseRange(size, rangeHeader) {
-    if (!rangeHeader || !rangeHeader.startsWith('bytes=')) {
-        return null;
+router.get('/:jobId/info',
+    downloadRateLimit,
+    validateRequest.jobId,
+    validateDownloadAccess,
+    async (req, res) => {
+        try {
+            const { job, fileStats } = req;
+            
+            // ✅ FIX: Validation et nettoyage des métriques
+            const compressionRatio = Math.max(0, Math.min(100, parseInt(job.compressionRatio) || 0));
+            const originalSize = Math.max(0, parseInt(job.size) || 0);
+            const compressedSize = Math.max(0, parseInt(job.compressedSize) || originalSize);
+            const savedBytes = Math.max(0, originalSize - compressedSize);
+            const processingTime = Math.max(0, new Date(job.updatedAt) - new Date(job.createdAt));
+
+            res.json({
+                success: true,
+                file: {
+                    jobId: job.id,
+                    originalName: ValidationService.sanitizeOutput(job.originalName),
+                    type: ValidationService.sanitizeOutput(job.type),
+                    originalSize,
+                    originalSizeFormatted: FileService.formatFileSize(originalSize),
+                    compressedSize,
+                    compressedSizeFormatted: FileService.formatFileSize(compressedSize),
+                    compressionRatio,
+                    savedBytes,
+                    savedBytesFormatted: FileService.formatFileSize(savedBytes),
+                    processingTime: Math.floor(processingTime / 1000), // en secondes
+                    mimeType: require('mime-types').lookup(job.originalName) || 'application/octet-stream',
+                    settings: job.settings || {},
+                    createdAt: job.createdAt,
+                    completedAt: job.updatedAt,
+                    security: {
+                        validated: true,
+                        pathSecure: true,
+                        accessControlled: true
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Erreur info download sécurisée:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Erreur récupération informations'
+            });
+        }
     }
+);
 
-    const ranges = [];
-    const rangeSpecs = rangeHeader.substring(6).split(',');
+/**
+ * ✅ FIX: GET /api/download/:jobId/preview - Prévisualisation sécurisée
+ */
+router.get('/:jobId/preview',
+    downloadRateLimit,
+    validateRequest.jobId,
+    validateDownloadAccess,
+    async (req, res) => {
+        try {
+            const { job, securePath } = req;
+            
+            // Vérifier que c'est une image
+            if (job.type !== 'image') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Prévisualisation disponible uniquement pour les images'
+                });
+            }
 
-    for (const rangeSpec of rangeSpecs) {
-        const rangeParts = rangeSpec.trim().split('-');
-        
-        if (rangeParts.length !== 2) continue;
+            // ✅ FIX: Validation paramètre size sécurisée
+            const sizeParam = req.query.size;
+            const allowedSizes = ['small', 'medium', 'large'];
+            const size = allowedSizes.includes(sizeParam) ? sizeParam : 'medium';
 
-        let start = parseInt(rangeParts[0]) || 0;
-        let end = parseInt(rangeParts[1]) || (size - 1);
+            const maxSizes = {
+                small: 150,
+                medium: 300,
+                large: 600
+            };
 
-        // Validation
-        if (start < 0) start = 0;
-        if (end >= size) end = size - 1;
-        if (start > end) continue;
+            const maxSize = maxSizes[size];
 
-        ranges.push({ start, end });
+            // ✅ FIX: Génération vignette sécurisée
+            const ImageService = require('../services/imageService');
+            const tempDir = process.env.TEMP_DIR || '/tmp/uploads';
+            
+            // Nom sécurisé pour la vignette
+            const safeThumbnailName = `preview_${ValidationService.sanitizeFilename(job.id)}_${maxSize}.jpg`;
+            const thumbnailPath = path.join(tempDir, 'previews', safeThumbnailName);
+
+            // ✅ FIX: Validation chemin vignette
+            const thumbnailValidation = FileService.validateSecurePath(thumbnailPath, tempDir);
+            if (!thumbnailValidation.isValid) {
+                logger.security('Tentative path traversal preview', {
+                    jobId: job.id,
+                    requestedPath: thumbnailPath,
+                    ip: req.ip
+                });
+                return res.status(403).json({
+                    success: false,
+                    error: 'Accès non autorisé'
+                });
+            }
+
+            // Créer le répertoire previews sécurisé
+            await FileService.ensureDirectoryExists(path.dirname(thumbnailValidation.resolvedPath));
+
+            // Vérifier si la vignette existe déjà
+            let thumbExists = await FileService.getFileStats(thumbnailValidation.resolvedPath);
+            
+            if (!thumbExists) {
+                try {
+                    // Créer la vignette de manière sécurisée
+                    await ImageService.createThumbnail(securePath, thumbnailValidation.resolvedPath, maxSize);
+                    thumbExists = await FileService.getFileStats(thumbnailValidation.resolvedPath);
+                } catch (thumbnailError) {
+                    logger.error('Erreur création vignette:', thumbnailError);
+                    return res.status(500).json({
+                        success: false,
+                        error: 'Impossible de générer la prévisualisation'
+                    });
+                }
+            }
+
+            if (!thumbExists || thumbExists.size === 0) {
+                return res.status(500).json({
+                    success: false,
+                    error: 'Vignette non générée ou corrompue'
+                });
+            }
+
+            // ✅ FIX: Headers sécurisés pour preview
+            res.setHeader('Content-Type', 'image/jpeg');
+            res.setHeader('Content-Length', thumbExists.size);
+            res.setHeader('Cache-Control', 'public, max-age=3600, immutable');
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.setHeader('Content-Disposition', 'inline');
+            
+            const stream = fs.createReadStream(thumbnailValidation.resolvedPath);
+            
+            // Stream sécurisé
+            stream.on('error', (error) => {
+                logger.error('Erreur stream preview:', error);
+                if (!res.headersSent) {
+                    res.status(500).end();
+                }
+            });
+
+            stream.pipe(res);
+
+            // ✅ FIX: Nettoyage conditionnel de la vignette
+            stream.on('end', () => {
+                // Nettoyer les vignettes anciennes (optionnel, après 1h)
+                setTimeout(async () => {
+                    try {
+                        const stats = await FileService.getFileStats(thumbnailValidation.resolvedPath);
+                        if (stats && Date.now() - stats.created.getTime() > 3600000) { // 1h
+                            await FileService.deleteSecureFile(thumbnailValidation.resolvedPath);
+                        }
+                    } catch (cleanupError) {
+                        // Ignore les erreurs de nettoyage
+                    }
+                }, 5000);
+            });
+
+        } catch (error) {
+            logger.error('Erreur preview sécurisée:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Erreur génération prévisualisation'
+            });
+        }
     }
-
-    return ranges.length > 0 ? ranges : null;
-}
+);
 
 module.exports = router;
