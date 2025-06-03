@@ -11,12 +11,19 @@ class FileOptimizer {
         this.api = null;
         this.ui = null;
         this.websocket = null;
+        this.isInitialized = false;
+        this.retryInitCount = 0;
+        this.maxRetryInit = 3;
         
         this.config = {
             maxFileSize: 5 * 1024 * 1024 * 1024, // 5GB
             supportedTypes: ['image', 'video', 'audio', 'document'],
-            apiEndpoint: window.location.origin + '/api'
+            apiEndpoint: window.location.origin + '/api',
+            maxConcurrentUploads: 3
         };
+        
+        this.uploadQueue = [];
+        this.activeUploads = 0;
         
         this.init();
     }
@@ -28,29 +35,128 @@ class FileOptimizer {
         try {
             console.log('🚀 Initialisation File Optimizer');
             
-            // Initialiser les modules
-            this.api = new ApiClient(this.config.apiEndpoint);
-            this.ui = new UIManager();
-            this.websocket = new WebSocketManager(this.config.apiEndpoint);
+            // ✅ FIX: Vérifier les dépendances avant l'initialisation
+            if (!this.checkDependencies()) {
+                throw new Error('Dépendances manquantes');
+            }
+
+            // Initialiser les modules avec gestion d'erreur
+            await this.initializeModules();
             
             // Configuration des événements
             this.setupEventListeners();
             this.setupWebSocketEvents();
             
             // Charger les données existantes
-            await this.loadExistingJobs();
-            await this.loadUploadInfo();
+            await this.loadApplicationData();
             
             // Marquer comme prêt
             this.ui.setLoadingState(false);
             this.ui.showStatus('Application prête', 'success');
+            this.isInitialized = true;
             
             console.log('✅ File Optimizer initialisé');
             
         } catch (error) {
             console.error('❌ Erreur initialisation:', error);
-            this.ui.showStatus('Erreur initialisation: ' + error.message, 'error');
+            await this.handleInitError(error);
         }
+    }
+
+    /**
+     * ✅ NOUVEAU: Vérifier les dépendances
+     */
+    checkDependencies() {
+        const required = ['Utils', 'ApiClient', 'UIManager', 'WebSocketManager'];
+        const missing = required.filter(dep => !window[dep]);
+        
+        if (missing.length > 0) {
+            console.error('Dépendances manquantes:', missing);
+            this.showErrorFallback('Modules JavaScript manquants: ' + missing.join(', '));
+            return false;
+        }
+        
+        return true;
+    }
+
+    /**
+     * ✅ NOUVEAU: Initialiser les modules avec gestion d'erreur
+     */
+    async initializeModules() {
+        try {
+            this.api = new ApiClient(this.config.apiEndpoint);
+            this.ui = new UIManager();
+            
+            // Test de connectivité avant WebSocket
+            const connectivity = await this.api.checkConnectivity();
+            if (!connectivity.online) {
+                throw new Error('Serveur non accessible');
+            }
+            
+            this.websocket = new WebSocketManager(this.config.apiEndpoint);
+            
+        } catch (error) {
+            console.error('Erreur initialisation modules:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * ✅ NOUVEAU: Charger les données de l'application
+     */
+    async loadApplicationData() {
+        const loadPromises = [
+            this.loadExistingJobs(),
+            this.loadUploadInfo()
+        ];
+
+        // Charger en parallèle, continuer même si certaines échouent
+        const results = await Promise.allSettled(loadPromises);
+        
+        results.forEach((result, index) => {
+            if (result.status === 'rejected') {
+                const operations = ['jobs existants', 'infos upload'];
+                console.warn(`Échec chargement ${operations[index]}:`, result.reason);
+            }
+        });
+    }
+
+    /**
+     * ✅ NOUVEAU: Gérer les erreurs d'initialisation
+     */
+    async handleInitError(error) {
+        this.retryInitCount++;
+        
+        if (this.retryInitCount < this.maxRetryInit) {
+            console.log(`Tentative de ré-initialisation ${this.retryInitCount}/${this.maxRetryInit}`);
+            
+            setTimeout(() => {
+                this.init();
+            }, 2000 * this.retryInitCount);
+        } else {
+            this.showErrorFallback('Échec d\'initialisation après plusieurs tentatives');
+        }
+    }
+
+    /**
+     * ✅ NOUVEAU: Afficher une interface d'erreur fallback
+     */
+    showErrorFallback(message) {
+        document.body.innerHTML = `
+            <div style="
+                position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                background: #1e293b; color: #f8fafc; padding: 2rem; border-radius: 12px;
+                box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3); text-align: center;
+                max-width: 400px; border: 1px solid #334155;
+            ">
+                <h2 style="color: #ef4444; margin-bottom: 1rem;">❌ Erreur Application</h2>
+                <p style="margin-bottom: 1rem;">${message}</p>
+                <button onclick="window.location.reload()" style="
+                    background: #2563eb; color: white; border: none; padding: 0.5rem 1rem;
+                    border-radius: 6px; cursor: pointer; font-size: 0.9rem;
+                ">Recharger la page</button>
+            </div>
+        `;
     }
 
     /**
@@ -62,6 +168,12 @@ class FileOptimizer {
         const refreshJobs = document.getElementById('refreshJobs');
         const clearCompleted = document.getElementById('clearCompleted');
 
+        // ✅ FIX: Vérifier l'existence des éléments
+        if (!uploadZone || !fileInput) {
+            console.error('Éléments DOM requis non trouvés');
+            return;
+        }
+
         // Upload zone drag & drop
         uploadZone.addEventListener('click', () => fileInput.click());
         uploadZone.addEventListener('dragover', this.handleDragOver.bind(this));
@@ -71,6 +183,8 @@ class FileOptimizer {
         // File input change
         fileInput.addEventListener('change', (e) => {
             this.handleFiles(Array.from(e.target.files));
+            // ✅ FIX: Reset input pour permettre re-sélection du même fichier
+            e.target.value = '';
         });
 
         // Boutons de contrôle
@@ -86,6 +200,18 @@ class FileOptimizer {
         document.addEventListener('click', (e) => {
             if (e.target.id === 'statusClose') {
                 this.ui.hideStatus();
+            }
+        });
+
+        // ✅ FIX: Gestion globale des erreurs click
+        document.addEventListener('click', (e) => {
+            // Gérer les actions sur les jobs même si l'app n'est pas initialisée
+            const action = e.target.dataset.action;
+            const jobId = e.target.dataset.jobId;
+            
+            if (action && jobId && this.isInitialized) {
+                e.preventDefault();
+                this.handleJobAction(action, jobId);
             }
         });
 
@@ -109,9 +235,38 @@ class FileOptimizer {
     }
 
     /**
+     * ✅ NOUVEAU: Gérer les actions sur les jobs
+     */
+    async handleJobAction(action, jobId) {
+        try {
+            switch (action) {
+                case 'delete':
+                    await this.deleteJob(jobId);
+                    break;
+                case 'retry':
+                    await this.retryJob(jobId);
+                    break;
+                case 'download':
+                    await this.downloadFile(jobId);
+                    break;
+                case 'cancel':
+                    await this.cancelJob(jobId);
+                    break;
+                default:
+                    console.warn('Action inconnue:', action);
+            }
+        } catch (error) {
+            console.error(`Erreur action ${action}:`, error);
+            this.ui.showStatus(`Erreur ${action}: ${error.message}`, 'error');
+        }
+    }
+
+    /**
      * Configuration des événements WebSocket
      */
     setupWebSocketEvents() {
+        if (!this.websocket) return;
+
         this.websocket.on('connect', () => {
             this.ui.setConnectionStatus(true);
             console.log('🔌 WebSocket connecté');
@@ -136,6 +291,15 @@ class FileOptimizer {
 
         this.websocket.on('job-queued', (data) => {
             this.updateJobStatus(data.jobId, 'queued');
+        });
+
+        // ✅ NOUVEAU: Gestion des événements système
+        this.websocket.on('server-shutdown', (data) => {
+            this.ui.showStatus('Serveur en maintenance', 'warning', 10000);
+        });
+
+        this.websocket.on('max-reconnect-attempts', () => {
+            this.ui.showStatus('Connexion perdue. Veuillez recharger la page.', 'error', 0);
         });
     }
 
@@ -181,13 +345,36 @@ class FileOptimizer {
             );
         }
 
-        // Traiter les fichiers valides
-        for (const file of validFiles) {
-            try {
-                await this.uploadFile(file);
-            } catch (error) {
-                console.error(`Erreur upload ${file.name}:`, error);
+        // ✅ FIX: Traitement par lots pour éviter la surcharge
+        if (validFiles.length > this.config.maxConcurrentUploads) {
+            this.uploadQueue.push(...validFiles);
+            this.processUploadQueue();
+        } else {
+            // Traiter les fichiers valides
+            for (const file of validFiles) {
+                try {
+                    await this.uploadFile(file);
+                } catch (error) {
+                    console.error(`Erreur upload ${file.name}:`, error);
+                }
             }
+        }
+    }
+
+    /**
+     * ✅ NOUVEAU: Traiter la queue d'upload
+     */
+    async processUploadQueue() {
+        while (this.uploadQueue.length > 0 && this.activeUploads < this.config.maxConcurrentUploads) {
+            const file = this.uploadQueue.shift();
+            this.activeUploads++;
+            
+            this.uploadFile(file)
+                .catch(error => console.error(`Erreur upload ${file.name}:`, error))
+                .finally(() => {
+                    this.activeUploads--;
+                    this.processUploadQueue(); // Traiter le suivant
+                });
         }
     }
 
@@ -195,6 +382,17 @@ class FileOptimizer {
      * Validation d'un fichier
      */
     validateFile(file) {
+        // ✅ FIX: Validation plus robuste
+        if (!file || !file.name) {
+            console.warn('Fichier invalide');
+            return false;
+        }
+
+        if (file.size === 0) {
+            console.warn(`Fichier vide: ${file.name}`);
+            return false;
+        }
+
         // Vérifier la taille
         if (file.size > this.config.maxFileSize) {
             console.warn(`Fichier trop volumineux: ${file.name} (${Utils.formatFileSize(file.size)})`);
@@ -224,7 +422,7 @@ class FileOptimizer {
 
             // Créer le job temporaire
             const tempJob = {
-                id: 'temp-' + Date.now(),
+                id: 'temp-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
                 name: file.name,
                 size: file.size,
                 type: fileType,
@@ -255,7 +453,11 @@ class FileOptimizer {
                 };
 
                 this.addJob(job);
-                this.websocket.joinJobRoom(result.jobId);
+                
+                // ✅ FIX: Vérifier que WebSocket est connecté avant join
+                if (this.websocket && this.websocket.isConnected) {
+                    this.websocket.joinJobRoom(result.jobId);
+                }
                 
                 this.ui.showStatus(`${file.name} uploadé avec succès!`, 'success');
                 
@@ -316,7 +518,7 @@ class FileOptimizer {
     updateJobProgress(jobId, progress) {
         const job = this.jobs.get(jobId);
         if (job) {
-            job.progress = progress;
+            job.progress = Math.min(100, Math.max(0, progress)); // ✅ FIX: Clamp la progression
             job.status = 'processing';
             this.ui.renderJobs(Array.from(this.jobs.values()));
             
@@ -349,8 +551,15 @@ class FileOptimizer {
      */
     async deleteJob(jobId) {
         try {
+            // ✅ FIX: Validation des paramètres
+            if (!jobId) {
+                throw new Error('Job ID manquant');
+            }
+
             const job = this.jobs.get(jobId);
-            if (!job) return;
+            if (!job) {
+                throw new Error('Job non trouvé');
+            }
 
             const confirmed = confirm(`Supprimer ${job.name} ?`);
             if (!confirmed) return;
@@ -379,13 +588,22 @@ class FileOptimizer {
      */
     async retryJob(jobId) {
         try {
+            if (!jobId) {
+                throw new Error('Job ID manquant');
+            }
+
             this.ui.setLoadingState(true);
             
             const result = await this.api.retryJob(jobId);
             
             if (result.success) {
                 this.updateJobStatus(jobId, 'queued');
-                this.websocket.joinJobRoom(jobId);
+                
+                // ✅ FIX: Vérifier WebSocket avant join
+                if (this.websocket && this.websocket.isConnected) {
+                    this.websocket.joinJobRoom(jobId);
+                }
+                
                 this.ui.showStatus('Job relancé', 'success');
             } else {
                 throw new Error(result.error || 'Erreur retry');
@@ -393,6 +611,36 @@ class FileOptimizer {
         } catch (error) {
             console.error('Erreur retry:', error);
             this.ui.showStatus('Erreur retry: ' + error.message, 'error');
+        } finally {
+            this.ui.setLoadingState(false);
+        }
+    }
+
+    /**
+     * ✅ NOUVEAU: Annuler un job
+     */
+    async cancelJob(jobId) {
+        try {
+            if (!jobId) {
+                throw new Error('Job ID manquant');
+            }
+
+            const confirmed = confirm('Annuler ce traitement ?');
+            if (!confirmed) return;
+
+            this.ui.setLoadingState(true);
+            
+            const result = await this.api.cancelJob(jobId);
+            
+            if (result.success) {
+                this.updateJobStatus(jobId, 'cancelled');
+                this.ui.showStatus('Job annulé', 'success');
+            } else {
+                throw new Error(result.error || 'Erreur annulation');
+            }
+        } catch (error) {
+            console.error('Erreur annulation:', error);
+            this.ui.showStatus('Erreur annulation: ' + error.message, 'error');
         } finally {
             this.ui.setLoadingState(false);
         }
@@ -427,7 +675,8 @@ class FileOptimizer {
                     this.jobs.set(job.id, job);
                     
                     // Rejoindre les rooms pour les jobs actifs
-                    if (['queued', 'processing'].includes(job.status)) {
+                    if (['queued', 'processing'].includes(job.status) && 
+                        this.websocket && this.websocket.isConnected) {
                         this.websocket.joinJobRoom(job.id);
                     }
                 });
@@ -475,6 +724,8 @@ class FileOptimizer {
             this.ui.setLoadingState(true);
             
             let successCount = 0;
+            
+            // ✅ FIX: Traitement séquentiel pour éviter la surcharge
             for (const job of completedJobs) {
                 try {
                     const result = await this.api.deleteJob(job.id);
@@ -501,23 +752,40 @@ class FileOptimizer {
     /**
      * Télécharger un fichier traité
      */
-    downloadFile(jobId) {
-        const job = this.jobs.get(jobId);
-        if (!job || job.status !== 'completed') {
-            this.ui.showStatus('Fichier non disponible pour téléchargement', 'warning');
-            return;
-        }
+    async downloadFile(jobId) {
+        try {
+            if (!jobId) {
+                throw new Error('Job ID manquant');
+            }
 
-        // Créer un lien de téléchargement
-        const downloadUrl = `${this.config.apiEndpoint}/download/${jobId}`;
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = job.name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        this.ui.showStatus(`Téléchargement de ${job.name} démarré`, 'success');
+            const job = this.jobs.get(jobId);
+            if (!job || job.status !== 'completed') {
+                this.ui.showStatus('Fichier non disponible pour téléchargement', 'warning');
+                return;
+            }
+
+            // ✅ FIX: Méthode de téléchargement améliorée
+            const blob = await this.api.downloadFile(jobId);
+            
+            // Créer l'URL de téléchargement
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = job.name;
+            link.style.display = 'none';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            // Nettoyer l'URL
+            setTimeout(() => window.URL.revokeObjectURL(url), 100);
+            
+            this.ui.showStatus(`Téléchargement de ${job.name} démarré`, 'success');
+        } catch (error) {
+            console.error('Erreur téléchargement:', error);
+            this.ui.showStatus('Erreur téléchargement: ' + error.message, 'error');
+        }
     }
 
     /**
@@ -531,10 +799,24 @@ class FileOptimizer {
             completed: jobs.filter(j => j.status === 'completed').length,
             processing: jobs.filter(j => j.status === 'processing').length,
             error: jobs.filter(j => j.status === 'error').length,
-            totalSize: jobs.reduce((sum, j) => sum + j.size, 0),
+            totalSize: jobs.reduce((sum, j) => sum + (j.size || 0), 0),
             totalSaved: jobs
                 .filter(j => j.compressedSize)
                 .reduce((sum, j) => sum + (j.size - j.compressedSize), 0)
+        };
+    }
+
+    /**
+     * ✅ NOUVEAU: Obtenir l'état de l'application
+     */
+    getApplicationState() {
+        return {
+            isInitialized: this.isInitialized,
+            jobsCount: this.jobs.size,
+            activeUploads: this.activeUploads,
+            queuedUploads: this.uploadQueue.length,
+            websocketConnected: this.websocket?.isConnected || false,
+            config: this.config
         };
     }
 
@@ -543,43 +825,83 @@ class FileOptimizer {
      */
     destroy() {
         if (this.websocket) {
-            this.websocket.disconnect();
+            this.websocket.destroy();
         }
+        
+        if (this.api) {
+            this.api.destroy();
+        }
+        
         this.jobs.clear();
+        this.uploadQueue.length = 0;
+        this.isInitialized = false;
+        
         console.log('🧹 File Optimizer nettoyé');
     }
 }
 
-// Fonctions globales pour l'interface
+// ✅ FIX: Fonctions globales sécurisées
 window.fileOptimizer = null;
 
-window.deleteJob = (jobId) => {
-    if (window.fileOptimizer) {
-        window.fileOptimizer.deleteJob(jobId);
+// Wrapper sécurisé pour les actions globales
+function safeExecute(action, ...args) {
+    if (!window.fileOptimizer || !window.fileOptimizer.isInitialized) {
+        console.warn('File Optimizer non initialisé');
+        return;
     }
-};
-
-window.retryJob = (jobId) => {
-    if (window.fileOptimizer) {
-        window.fileOptimizer.retryJob(jobId);
+    
+    try {
+        return window.fileOptimizer[action](...args);
+    } catch (error) {
+        console.error(`Erreur exécution ${action}:`, error);
     }
-};
+}
 
-window.downloadFile = (jobId) => {
-    if (window.fileOptimizer) {
-        window.fileOptimizer.downloadFile(jobId);
-    }
-};
+window.deleteJob = (jobId) => safeExecute('deleteJob', jobId);
+window.retryJob = (jobId) => safeExecute('retryJob', jobId);
+window.downloadFile = (jobId) => safeExecute('downloadFile', jobId);
+window.cancelJob = (jobId) => safeExecute('cancelJob', jobId);
 
-// Initialisation au chargement de la page
+// ✅ FIX: Initialisation sécurisée avec retry
 document.addEventListener('DOMContentLoaded', () => {
     console.log('🎯 File Optimizer Frontend v2.0.0');
-    window.fileOptimizer = new FileOptimizer();
+    
+    try {
+        window.fileOptimizer = new FileOptimizer();
+    } catch (error) {
+        console.error('Erreur création FileOptimizer:', error);
+        
+        // Retry après 2 secondes
+        setTimeout(() => {
+            try {
+                window.fileOptimizer = new FileOptimizer();
+            } catch (retryError) {
+                console.error('Échec retry FileOptimizer:', retryError);
+            }
+        }, 2000);
+    }
 });
 
 // Nettoyage à la fermeture
 window.addEventListener('beforeunload', () => {
     if (window.fileOptimizer) {
         window.fileOptimizer.destroy();
+    }
+});
+
+// ✅ NOUVEAU: Gestionnaire d'erreurs global pour l'app
+window.addEventListener('error', (event) => {
+    console.error('Erreur JavaScript globale:', event.error);
+    
+    if (window.fileOptimizer && window.fileOptimizer.ui) {
+        window.fileOptimizer.ui.showStatus('Erreur inattendue détectée', 'error');
+    }
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+    console.error('Promise rejetée non gérée:', event.reason);
+    
+    if (window.fileOptimizer && window.fileOptimizer.ui) {
+        window.fileOptimizer.ui.showStatus('Erreur async non gérée', 'error');
     }
 });
